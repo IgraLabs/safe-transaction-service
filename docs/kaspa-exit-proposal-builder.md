@@ -64,6 +64,66 @@ small helper. The signer-side local verification path is already present as
 `cast igra verify-exit`, with companion address checks in `derive-msig-address`,
 `verify-msig-address`, `check-msig-path`, and `verify-bundle-integral`.
 
+## Operational Architecture
+
+The production flow has three independent roles:
+
+- Safe Transaction Service stores federations, unsigned PST proposals, signer
+  submissions, merged PST state, evidence, and broadcast results.
+- Proposal Builder observes only the configured Igra chain and exact bridge
+  contracts, verifies a closed exit window, builds one unsigned proposal, and
+  posts it to Safe Transaction Service. It never has Kaspa private keys.
+- Signer wallets poll Safe Transaction Service, fetch the unsigned PST and exit
+  evidence, re-verify against their own Igra and Kaspa RPC endpoints, sign
+  locally, and submit signed PST bundles back to Safe Transaction Service.
+
+The execution step is permissionless at the service level after quorum:
+whichever signer/operator is assigned can call the broadcast endpoint once the
+proposal is `READY`. The service re-validates the merged signed PST immediately
+before broadcast.
+
+The Proposal Builder must be configured with an allowlist, not discovered
+dynamically:
+
+```text
+Igra chain ID:        38833
+Igra RPC:             configured RPC URL
+KasExitBridge:        0x4bb88C213d3eD9dc4bae694f1bc1bF745903b2d0
+Mailbox:              0x3a867fCfFeC2B790970eeBDC9023E75B0a172aa7
+MerkleTreeHook:       0x75719C858e0c73e07128F95B2C466d142490e933
+Kaspa network:        mainnet
+Kaspa txid prefix:    97b1
+Kaspa bridge address: kaspa:ppvnxxzm0rr37zpnwux2f2ntvfpr4uqdpm7zsvsztg3en92r7gs0wkmr72q9n
+```
+
+Any chain ID, contract address, mailbox, Merkle hook, bridge address, threshold,
+ECDSA flag, or kpub mismatch is a hard failure before proposal creation.
+
+## Window Timing
+
+The existing KEB automation uses deterministic block windows. In
+`/Users/user/Source/igra/kasExitBridge/runDelta.ts`, the default delta is
+`86_400` blocks. It can be overridden by `--delta-blocks`, `KEB_DELTA_BLOCKS`, or
+`kasExitBridge.deltaBlocksDefault`.
+
+For each run:
+
+```text
+fromBlock = previous.toBlock + 1
+toBlock   = fromBlock + deltaBlocks - 1
+start checkpoint block = fromBlock - 1
+end checkpoint block   = toBlock
+next window starts at  = toBlock + 1
+```
+
+The current script does not implement an additional finality delay; operators
+choose a completed range. The service daemon should make that rule explicit:
+only build when the Igra RPC reports that the selected `toBlock` is finalized, or
+when `latest >= toBlock + l2ConfirmationBlocks` for RPCs without a reliable
+`finalized` tag. For mainnet, the Foundry Igra profile uses `el_confirmations=12`
+for ordinary submissions; that is a reasonable initial default for the Proposal
+Builder confirmation margin unless Igra exposes a stronger finalized block tag.
+
 ## Real Exit-35 Fixture
 
 The real local fixture is available at:
@@ -388,7 +448,8 @@ identified, audited, and re-verified by wallets.
 
 1. Resolve the next window from the latest successful `KaspaExitBatch` or an
    explicit previous checkpoint.
-2. Wait until the L2 head is beyond `toBlock` by the configured finality margin.
+2. Wait until the Igra RPC reports `toBlock` finalized, or until
+   `latest >= toBlock + l2ConfirmationBlocks`.
 3. Collect logs, receipts, traces, contract checkpoints, and raw tx material.
 4. Run the L2, tree, root replay, and contract preverification gates.
 5. Select live Kaspa bridge UTXOs.
@@ -407,7 +468,8 @@ identified, audited, and re-verified by wallets.
   tooling, or ports the verifier into Python.
 - Where large raw artifacts live long term: database JSON for small reports,
   object storage for raw receipts/traces.
-- Exact finality margin beyond the 86,400-block window close.
+- Whether mainnet should use the current Foundry default of 12 L2 confirmations
+  or a stronger finalized-block RPC tag for proposal readiness.
 - UTXO selection policy when several canonical bridge UTXOs are available.
 - Whether evidence should be unsigned only, or also signed by an independent
   service identity that is not a Kaspa wallet key.
