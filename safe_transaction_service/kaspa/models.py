@@ -21,6 +21,14 @@ class KaspaTxProposalStatus(models.TextChoices):
     FAILED = "failed", "Failed"
 
 
+class KaspaExitBatchStatus(models.TextChoices):
+    OBSERVING = "observing", "Observing"
+    VERIFIED = "verified", "Verified"
+    PROPOSED = "proposed", "Proposed"
+    FAILED = "failed", "Failed"
+    CANCELLED = "cancelled", "Cancelled"
+
+
 class KaspaFederation(TimeStampedModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=128, blank=True, default="")
@@ -73,12 +81,112 @@ class KaspaFederationParticipant(TimeStampedModel):
         return f"{label} ({self.cosigner_index})"
 
 
+class KaspaExitBatch(TimeStampedModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    federation = models.ForeignKey(
+        KaspaFederation,
+        on_delete=models.CASCADE,
+        related_name="exit_batches",
+    )
+    network = models.CharField(max_length=16, choices=KaspaNetwork.choices)
+    l2_chain_id = models.PositiveIntegerField(db_index=True)
+    from_block = models.PositiveBigIntegerField()
+    to_block = models.PositiveBigIntegerField()
+    finalized_at_block = models.PositiveBigIntegerField(null=True, blank=True)
+    status = models.CharField(
+        max_length=16,
+        choices=KaspaExitBatchStatus.choices,
+        default=KaspaExitBatchStatus.OBSERVING,
+        db_index=True,
+    )
+    evidence_hash = models.CharField(
+        max_length=64, blank=True, default="", db_index=True
+    )
+    total_exits = models.PositiveIntegerField(default=0)
+    total_amount_sompi = models.BigIntegerField(default=0)
+    canonical_bridge_address = models.CharField(max_length=128)
+    canonical_bridge_script_public_key = models.CharField(
+        max_length=128, blank=True, default=""
+    )
+    canonical_derivation_path = models.CharField(max_length=64, default="m/0/0/1")
+    threshold = models.PositiveSmallIntegerField()
+    xpub_fingerprint = models.CharField(max_length=64, db_index=True)
+    checks = models.JSONField(default=dict)
+    artifact_hashes = models.JSONField(default=dict)
+    evidence = models.JSONField(default=dict)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["federation", "l2_chain_id", "from_block", "to_block"],
+                name="unique_kaspa_exit_batch_window",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["network", "status", "to_block"],
+                name="kaspa_exit_batch_status",
+            ),
+        ]
+        ordering = ["-to_block", "-created"]
+
+    def __str__(self):
+        return f"{self.l2_chain_id}:{self.from_block}-{self.to_block} {self.status}"
+
+
+class KaspaExitRequest(TimeStampedModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    batch = models.ForeignKey(
+        KaspaExitBatch,
+        on_delete=models.CASCADE,
+        related_name="exit_requests",
+    )
+    request_id = models.PositiveBigIntegerField()
+    message_id = models.CharField(max_length=66, db_index=True)
+    block_number = models.PositiveBigIntegerField(db_index=True)
+    transaction_hash = models.CharField(max_length=66, db_index=True)
+    log_index = models.PositiveIntegerField(null=True, blank=True)
+    tree_index = models.PositiveBigIntegerField(null=True, blank=True)
+    recipient_address = models.CharField(max_length=128)
+    amount_sompi = models.BigIntegerField()
+    burn_wei = models.CharField(max_length=80, blank=True, default="")
+    origin_burner_address = models.CharField(max_length=42, blank=True, default="")
+    dispatch_message = models.TextField(blank=True, default="")
+    dispatch_decoded = models.JSONField(default=dict)
+    raw = models.JSONField(default=dict)
+    checks = models.JSONField(default=dict)
+    status = models.CharField(max_length=32, default="success", db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["batch", "request_id"],
+                name="unique_kaspa_exit_request_id",
+            ),
+            models.UniqueConstraint(
+                fields=["batch", "message_id"],
+                name="unique_kaspa_exit_message_id",
+            ),
+        ]
+        ordering = ["block_number", "log_index", "request_id"]
+
+    def __str__(self):
+        return f"{self.request_id} {self.amount_sompi} -> {self.recipient_address}"
+
+
 class KaspaTxProposal(TimeStampedModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     federation = models.ForeignKey(
         KaspaFederation,
         on_delete=models.CASCADE,
         related_name="tx_proposals",
+    )
+    exit_batch = models.OneToOneField(
+        KaspaExitBatch,
+        on_delete=models.PROTECT,
+        related_name="tx_proposal",
+        null=True,
+        blank=True,
     )
     proposal_hash = models.CharField(max_length=64, unique=True, db_index=True)
     format = models.CharField(max_length=32, default="kaspawallet_pst_v1")

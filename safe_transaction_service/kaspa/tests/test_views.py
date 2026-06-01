@@ -9,6 +9,9 @@ from rest_framework.test import APITestCase
 
 from safe_transaction_service.kaspa.models import (
     KaspaBroadcastAttempt,
+    KaspaExitBatch,
+    KaspaExitBatchStatus,
+    KaspaExitRequest,
     KaspaFederation,
     KaspaTxProposal,
     KaspaTxProposalStatus,
@@ -39,6 +42,49 @@ class TestKaspaViews(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         return KaspaFederation.objects.get(pk=response.json()["id"])
+
+    def create_exit_batch(self, federation: KaspaFederation) -> KaspaExitBatch:
+        exit_batch = KaspaExitBatch.objects.create(
+            federation=federation,
+            network=federation.network,
+            l2_chain_id=38833,
+            from_block=7344000,
+            to_block=7430399,
+            finalized_at_block=7430399,
+            status=KaspaExitBatchStatus.VERIFIED,
+            evidence_hash="e" * 64,
+            total_exits=1,
+            total_amount_sompi=200,
+            canonical_bridge_address="kaspa:bridge",
+            canonical_bridge_script_public_key="aa20",
+            canonical_derivation_path="m/0/0/1",
+            threshold=federation.threshold,
+            xpub_fingerprint=federation.xpub_fingerprint,
+            checks={"ok": True},
+            artifact_hashes={"exitData": "d" * 64},
+            evidence={
+                "schemaVersion": 1,
+                "kind": "kaspa-exit-proposal-evidence",
+                "window": {"fromBlock": 7344000, "toBlock": 7430399},
+            },
+        )
+        KaspaExitRequest.objects.create(
+            batch=exit_batch,
+            request_id=35,
+            message_id="0x" + "1" * 64,
+            block_number=7344010,
+            transaction_hash="0x" + "2" * 64,
+            log_index=7,
+            tree_index=128,
+            recipient_address="kaspa:recipient",
+            amount_sompi=200,
+            burn_wei="2000000000000",
+            origin_burner_address="0x" + "3" * 40,
+            dispatch_message="0xdeadbeef",
+            dispatch_decoded={"body": {"kasPayoutAddress": "kaspa:recipient"}},
+            checks={"ok": True},
+        )
+        return exit_batch
 
     def test_create_federation(self):
         federation = self.create_federation()
@@ -121,6 +167,52 @@ class TestKaspaViews(APITestCase):
         self.assertEqual(proposal.status, KaspaTxProposalStatus.BROADCASTED)
         self.assertEqual(proposal.broadcast_tx_ids, ["tx-final"])
         self.assertEqual(KaspaBroadcastAttempt.objects.filter(success=True).count(), 1)
+
+    @mock.patch("safe_transaction_service.kaspa.serializers.get_pst_client")
+    def test_create_exit_proposal_and_fetch_evidence(
+        self, get_pst_client_mock: MagicMock
+    ):
+        federation = self.create_federation()
+        exit_batch = self.create_exit_batch(federation)
+        pst_client = get_pst_client_mock.return_value
+        pst_client.inspect.return_value = {
+            "proposalHash": "c" * 64,
+            "xpubFingerprint": federation.xpub_fingerprint,
+            "txIds": ["tx-unsigned"],
+            "inputOutpoints": [{"txId": "prev", "index": 0, "amountSompi": 300}],
+            "outputs": [{"address": "kaspa:recipient", "amountSompi": 200}],
+            "feeSompi": 100,
+            "mass": 1200,
+            "signaturesRequired": 2,
+            "signaturesCollected": 0,
+            "ready": False,
+        }
+
+        response = self.client.post(
+            reverse("v1:kaspa:federation-transactions", args=(federation.pk,)),
+            data={
+                "unsignedBundleHex": "aa",
+                "exitBatch": str(exit_batch.pk),
+                "proposedBy": "exit-observer",
+                "origin": {"kind": "igra-l2-exit"},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        proposal = KaspaTxProposal.objects.get(proposal_hash="c" * 64)
+        self.assertEqual(proposal.exit_batch_id, exit_batch.id)
+        exit_batch.refresh_from_db()
+        self.assertEqual(exit_batch.status, KaspaExitBatchStatus.PROPOSED)
+        self.assertEqual(response.json()["exitBatch"], str(exit_batch.pk))
+        self.assertEqual(response.json()["exitEvidenceHash"], "e" * 64)
+
+        response = self.client.get(
+            reverse("v1:kaspa:exit-batch-evidence", args=(exit_batch.pk,)),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.json()["kind"], "kaspa-exit-proposal-evidence")
 
     @mock.patch("safe_transaction_service.kaspa.serializers.get_pst_client")
     def test_reject_signed_bundle_when_helper_detects_mutation(

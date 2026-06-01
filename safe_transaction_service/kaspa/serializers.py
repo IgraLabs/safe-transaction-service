@@ -11,6 +11,9 @@ from rest_framework.exceptions import ValidationError
 
 from .models import (
     KaspaBroadcastAttempt,
+    KaspaExitBatch,
+    KaspaExitBatchStatus,
+    KaspaExitRequest,
     KaspaFederation,
     KaspaFederationParticipant,
     KaspaNetwork,
@@ -137,11 +140,97 @@ class KaspaTxSignatureResponseSerializer(serializers.Serializer):
     signature_count = serializers.IntegerField()
 
 
+class KaspaExitRequestResponseSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    created = serializers.DateTimeField()
+    modified = serializers.DateTimeField()
+    request_id = serializers.IntegerField()
+    message_id = serializers.CharField()
+    block_number = serializers.IntegerField()
+    transaction_hash = serializers.CharField()
+    log_index = serializers.IntegerField(allow_null=True)
+    tree_index = serializers.IntegerField(allow_null=True)
+    recipient_address = serializers.CharField()
+    amount_sompi = serializers.IntegerField()
+    burn_wei = serializers.CharField()
+    origin_burner_address = serializers.CharField()
+    dispatch_message = serializers.CharField()
+    dispatch_decoded = serializers.JSONField()
+    raw = serializers.JSONField()
+    checks = serializers.JSONField()
+    status = serializers.CharField()
+
+
+class KaspaExitBatchSummarySerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    created = serializers.DateTimeField()
+    modified = serializers.DateTimeField()
+    federation = serializers.UUIDField(source="federation_id")
+    network = serializers.CharField()
+    l2_chain_id = serializers.IntegerField()
+    from_block = serializers.IntegerField()
+    to_block = serializers.IntegerField()
+    finalized_at_block = serializers.IntegerField(allow_null=True)
+    status = serializers.CharField()
+    evidence_hash = serializers.CharField()
+    total_exits = serializers.IntegerField()
+    total_amount_sompi = serializers.IntegerField()
+    canonical_bridge_address = serializers.CharField()
+    threshold = serializers.IntegerField()
+    xpub_fingerprint = serializers.CharField()
+    proposal_hash = serializers.SerializerMethodField()
+
+    def get_proposal_hash(self, obj: KaspaExitBatch) -> str | None:
+        try:
+            return obj.tx_proposal.proposal_hash
+        except KaspaTxProposal.DoesNotExist:
+            return None
+
+
+class KaspaExitBatchResponseSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    created = serializers.DateTimeField()
+    modified = serializers.DateTimeField()
+    federation = serializers.UUIDField(source="federation_id")
+    network = serializers.CharField()
+    l2_chain_id = serializers.IntegerField()
+    from_block = serializers.IntegerField()
+    to_block = serializers.IntegerField()
+    finalized_at_block = serializers.IntegerField(allow_null=True)
+    status = serializers.CharField()
+    evidence_hash = serializers.CharField()
+    total_exits = serializers.IntegerField()
+    total_amount_sompi = serializers.IntegerField()
+    canonical_bridge_address = serializers.CharField()
+    canonical_bridge_script_public_key = serializers.CharField()
+    canonical_derivation_path = serializers.CharField()
+    threshold = serializers.IntegerField()
+    xpub_fingerprint = serializers.CharField()
+    checks = serializers.JSONField()
+    artifact_hashes = serializers.JSONField()
+    evidence = serializers.JSONField()
+    proposal_hash = serializers.SerializerMethodField()
+    exit_requests = serializers.SerializerMethodField()
+
+    def get_proposal_hash(self, obj: KaspaExitBatch) -> str | None:
+        try:
+            return obj.tx_proposal.proposal_hash
+        except KaspaTxProposal.DoesNotExist:
+            return None
+
+    def get_exit_requests(self, obj: KaspaExitBatch) -> list[dict[str, Any]]:
+        return KaspaExitRequestResponseSerializer(
+            obj.exit_requests.all(), many=True
+        ).data
+
+
 class KaspaTxProposalResponseSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     created = serializers.DateTimeField()
     modified = serializers.DateTimeField()
     federation = serializers.UUIDField(source="federation_id")
+    exit_batch = serializers.SerializerMethodField()
+    exit_evidence_hash = serializers.SerializerMethodField()
     proposal_hash = serializers.CharField()
     format = serializers.CharField()
     unsigned_bundle_hex = serializers.CharField()
@@ -163,14 +252,54 @@ class KaspaTxProposalResponseSerializer(serializers.Serializer):
     def get_signatures(self, obj: KaspaTxProposal) -> list[dict[str, Any]]:
         return KaspaTxSignatureResponseSerializer(obj.signatures.all(), many=True).data
 
+    def get_exit_batch(self, obj: KaspaTxProposal) -> str | None:
+        if not obj.exit_batch_id:
+            return None
+        return str(obj.exit_batch_id)
+
+    def get_exit_evidence_hash(self, obj: KaspaTxProposal) -> str | None:
+        if not obj.exit_batch_id:
+            return None
+        return obj.exit_batch.evidence_hash
+
 
 class KaspaTxProposalCreateSerializer(serializers.Serializer):
     unsigned_bundle_hex = serializers.CharField()
+    exit_batch = serializers.UUIDField(required=False, allow_null=True)
     proposed_by = serializers.CharField(max_length=255, allow_blank=True, default="")
     origin = serializers.JSONField(default=dict)
 
     def validate_unsigned_bundle_hex(self, value: str) -> str:
         return normalize_bundle_hex(value)
+
+    def validate_exit_batch(self, value) -> KaspaExitBatch | None:
+        if value is None:
+            return None
+
+        federation: KaspaFederation = self.context["federation"]
+        try:
+            exit_batch = KaspaExitBatch.objects.get(pk=value, federation=federation)
+        except KaspaExitBatch.DoesNotExist as exc:
+            raise ValidationError(
+                "Exit batch does not belong to this federation"
+            ) from exc
+
+        if exit_batch.status != KaspaExitBatchStatus.VERIFIED:
+            raise ValidationError(
+                "Exit batch must be verified before proposal creation"
+            )
+        if exit_batch.network != federation.network:
+            raise ValidationError("Exit batch network does not match federation")
+        if exit_batch.threshold != federation.threshold:
+            raise ValidationError("Exit batch threshold does not match federation")
+        if exit_batch.xpub_fingerprint != federation.xpub_fingerprint:
+            raise ValidationError(
+                "Exit batch xpub fingerprint does not match federation"
+            )
+        if hasattr(exit_batch, "tx_proposal"):
+            raise ValidationError("Exit batch already has a transaction proposal")
+
+        return exit_batch
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
@@ -211,32 +340,39 @@ class KaspaTxProposalCreateSerializer(serializers.Serializer):
     def create(self, validated_data):
         federation: KaspaFederation = self.context["federation"]
         inspection = validated_data.pop("inspection")
+        exit_batch = validated_data.get("exit_batch")
         unsigned_bundle_hex = validated_data["unsigned_bundle_hex"]
         ready = bool(inspection.get("ready", False))
 
         try:
-            return KaspaTxProposal.objects.create(
-                federation=federation,
-                proposal_hash=validated_data["proposal_hash"],
-                unsigned_bundle_hex=unsigned_bundle_hex,
-                merged_bundle_hex=unsigned_bundle_hex,
-                status=(
-                    KaspaTxProposalStatus.READY
-                    if ready
-                    else KaspaTxProposalStatus.PENDING
-                ),
-                tx_ids=inspection.get("txIds", []),
-                input_outpoints=inspection.get("inputOutpoints", []),
-                outputs=inspection.get("outputs", []),
-                fee_sompi=inspection.get("feeSompi"),
-                mass=inspection.get("mass"),
-                signatures_required=inspection.get(
-                    "signaturesRequired", federation.threshold
-                ),
-                signatures_collected=inspection.get("signaturesCollected", 0),
-                proposed_by=validated_data.get("proposed_by", ""),
-                origin=validated_data.get("origin", {}),
-            )
+            with transaction.atomic():
+                proposal = KaspaTxProposal.objects.create(
+                    federation=federation,
+                    exit_batch=exit_batch,
+                    proposal_hash=validated_data["proposal_hash"],
+                    unsigned_bundle_hex=unsigned_bundle_hex,
+                    merged_bundle_hex=unsigned_bundle_hex,
+                    status=(
+                        KaspaTxProposalStatus.READY
+                        if ready
+                        else KaspaTxProposalStatus.PENDING
+                    ),
+                    tx_ids=inspection.get("txIds", []),
+                    input_outpoints=inspection.get("inputOutpoints", []),
+                    outputs=inspection.get("outputs", []),
+                    fee_sompi=inspection.get("feeSompi"),
+                    mass=inspection.get("mass"),
+                    signatures_required=inspection.get(
+                        "signaturesRequired", federation.threshold
+                    ),
+                    signatures_collected=inspection.get("signaturesCollected", 0),
+                    proposed_by=validated_data.get("proposed_by", ""),
+                    origin=validated_data.get("origin", {}),
+                )
+                if exit_batch:
+                    exit_batch.status = KaspaExitBatchStatus.PROPOSED
+                    exit_batch.save(update_fields=["status", "modified"])
+                return proposal
         except IntegrityError as exc:
             raise ValidationError("Kaspa transaction proposal already exists") from exc
 

@@ -3,14 +3,14 @@ from django.shortcuts import get_object_or_404
 
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import status
-from rest_framework.generics import ListCreateAPIView, RetrieveAPIView
+from rest_framework.generics import ListAPIView, ListCreateAPIView, RetrieveAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from safe_transaction_service.history.pagination import DefaultPagination
 
 from . import serializers
-from .models import KaspaFederation, KaspaTxProposal
+from .models import KaspaExitBatch, KaspaFederation, KaspaTxProposal
 
 
 class KaspaFederationListCreateView(ListCreateAPIView):
@@ -50,6 +50,7 @@ class KaspaFederationTransactionListCreateView(ListCreateAPIView):
     def get_queryset(self):
         return (
             KaspaTxProposal.objects.filter(federation=self.get_federation())
+            .select_related("exit_batch")
             .prefetch_related("signatures")
             .order_by("-created")
         )
@@ -89,14 +90,54 @@ class KaspaFederationTransactionListCreateView(ListCreateAPIView):
 class KaspaTxProposalDetailView(RetrieveAPIView):
     lookup_url_kwarg = "proposal_hash"
     lookup_field = "proposal_hash"
-    queryset = KaspaTxProposal.objects.select_related("federation").prefetch_related(
-        "signatures"
-    )
+    queryset = KaspaTxProposal.objects.select_related(
+        "federation", "exit_batch"
+    ).prefetch_related("signatures")
     serializer_class = serializers.KaspaTxProposalResponseSerializer
 
     @extend_schema(tags=["kaspa"], responses={200: serializers.KaspaTxProposalResponseSerializer})
     def get(self, request, *args, **kwargs):
         return super().get(request, *args, **kwargs)
+
+
+class KaspaExitBatchListView(ListAPIView):
+    queryset = (
+        KaspaExitBatch.objects.select_related("federation", "tx_proposal")
+        .order_by("-to_block", "-created")
+    )
+    serializer_class = serializers.KaspaExitBatchSummarySerializer
+    pagination_class = DefaultPagination
+
+    @extend_schema(
+        tags=["kaspa"], responses={200: serializers.KaspaExitBatchSummarySerializer}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+
+class KaspaExitBatchDetailView(RetrieveAPIView):
+    queryset = (
+        KaspaExitBatch.objects.select_related("federation", "tx_proposal")
+        .prefetch_related("exit_requests")
+        .order_by("-to_block", "-created")
+    )
+    serializer_class = serializers.KaspaExitBatchResponseSerializer
+
+    @extend_schema(
+        tags=["kaspa"], responses={200: serializers.KaspaExitBatchResponseSerializer}
+    )
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+
+class KaspaExitBatchEvidenceView(APIView):
+    @extend_schema(
+        tags=["kaspa"],
+        responses={200: OpenApiResponse(description="Verified exit evidence package")},
+    )
+    def get(self, request, pk, *args, **kwargs):
+        exit_batch = get_object_or_404(KaspaExitBatch, pk=pk)
+        return Response(exit_batch.evidence)
 
 
 class KaspaTxSignatureListCreateView(ListCreateAPIView):
@@ -141,6 +182,7 @@ class KaspaTxSignatureListCreateView(ListCreateAPIView):
         signature = serializer.save()
         proposal = (
             KaspaTxProposal.objects.select_related("federation")
+            .select_related("exit_batch")
             .prefetch_related("signatures")
             .get(pk=signature.proposal_id)
         )
@@ -161,7 +203,7 @@ class KaspaTxBroadcastView(APIView):
     )
     def post(self, request, proposal_hash, *args, **kwargs):
         proposal = get_object_or_404(
-            KaspaTxProposal.objects.select_related("federation"),
+            KaspaTxProposal.objects.select_related("federation", "exit_batch"),
             proposal_hash=proposal_hash,
         )
         serializer = serializers.KaspaBroadcastSerializer(

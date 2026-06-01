@@ -35,3 +35,21 @@ The expected wallet flow is:
 5. The service accepts only signature-slot additions and stores the merged bundle.
 6. Once threshold is met, the proposal becomes ready and can be broadcast.
 ```
+
+## Igra L2 exit proposals
+
+Exit-driven proposals use the same signing flow, but the unsigned PST is
+attached to a verified `KaspaExitBatch`.
+
+```text
+1. The exit observer verifies a finalized Igra L2 block window and records a KaspaExitBatch.
+2. It records every successful ExitRequested message as a KaspaExitRequest.
+3. It builds an unsigned Kaspa PST without private keys and posts it with exitBatch.
+4. Wallets fetch the proposal and /api/v1/kaspa/exit-batches/{id}/evidence/.
+5. Wallets re-run the L2, Merkle-tree, funding-UTXO, and unsigned-tx checks locally.
+6. Wallets sign only if the evidence and unsigned PST match.
+```
+
+The service stores public kpubs, the canonical bridge address, verified event
+material, artifact hashes, and the unsigned transaction. It must not store Kaspa
+wallet private keys.

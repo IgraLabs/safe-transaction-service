@@ -27,6 +27,21 @@ urlpatterns = [
         name="transaction",
     ),
     path(
+        "exit-batches/",
+        views.KaspaExitBatchListView.as_view(),
+        name="exit-batches",
+    ),
+    path(
+        "exit-batches/<uuid:pk>/",
+        views.KaspaExitBatchDetailView.as_view(),
+        name="exit-batch",
+    ),
+    path(
+        "exit-batches/<uuid:pk>/evidence/",
+        views.KaspaExitBatchEvidenceView.as_view(),
+        name="exit-batch-evidence",
+    ),
+    path(
         "transactions/<str:proposal_hash>/signatures/",
         views.KaspaTxSignatureListCreateView.as_view(),
         name="transaction-signatures",

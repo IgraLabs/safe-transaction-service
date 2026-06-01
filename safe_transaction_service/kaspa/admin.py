@@ -3,6 +3,8 @@ from django.contrib import admin
 
 from .models import (
     KaspaBroadcastAttempt,
+    KaspaExitBatch,
+    KaspaExitRequest,
     KaspaFederation,
     KaspaFederationParticipant,
     KaspaTxProposal,
@@ -22,11 +24,43 @@ class KaspaFederationParticipantAdmin(admin.ModelAdmin):
     search_fields = ("id", "name", "root_xpub")
 
 
+@admin.register(KaspaExitBatch)
+class KaspaExitBatchAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "federation",
+        "l2_chain_id",
+        "from_block",
+        "to_block",
+        "status",
+        "total_exits",
+        "total_amount_sompi",
+    )
+    list_filter = ("status", "network", "l2_chain_id")
+    search_fields = ("id", "evidence_hash", "canonical_bridge_address")
+
+
+@admin.register(KaspaExitRequest)
+class KaspaExitRequestAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "batch",
+        "request_id",
+        "block_number",
+        "recipient_address",
+        "amount_sompi",
+        "status",
+    )
+    list_filter = ("status",)
+    search_fields = ("id", "message_id", "transaction_hash", "recipient_address")
+
+
 @admin.register(KaspaTxProposal)
 class KaspaTxProposalAdmin(admin.ModelAdmin):
     list_display = (
         "proposal_hash",
         "federation",
+        "exit_batch",
         "status",
         "signatures_collected",
         "signatures_required",
