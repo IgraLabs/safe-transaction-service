@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: FSL-1.1-MIT
 import hashlib
 import json
+import re
 import subprocess
 import tempfile
 import urllib.error
@@ -44,6 +45,7 @@ class KaspaExitProposalBuilderConfig:
     kaspa_tx_id_prefix: str = "97b1"
     l2_confirmation_blocks: int = 12
     proposed_by: str = "igra-exit-proposal-builder"
+    foundry_extended_public_keys: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -55,10 +57,31 @@ class KaspaExitProposalBuildResult:
     unsigned_bundle_hex: str
 
 
+_BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_BASE58_ALPHABET_BYTES = _BASE58_ALPHABET.encode()
+_BASE58_INDEX = {char: index for index, char in enumerate(_BASE58_ALPHABET)}
+_BASE58_XPUB_RE = re.compile(
+    rb"(?=([" + re.escape(_BASE58_ALPHABET_BYTES) + rb"]{111}))"
+)
+_KASPA_PUBLIC_XPUB_VERSIONS = {
+    "mainnet": bytes.fromhex("038f332e"),
+    "testnet": bytes.fromhex("0390a241"),
+    "devnet": bytes.fromhex("038b41ba"),
+    "simnet": bytes.fromhex("0390467d"),
+}
+
+
 def load_builder_config(path: str | Path) -> KaspaExitProposalBuilderConfig:
     data = _load_json(Path(path))
     contracts = _expect_dict(data.get("contracts"), "contracts")
     bridge = _expect_dict(data.get("bridge"), "bridge")
+    foundry_extended_public_keys = data.get("foundryExtendedPublicKeys")
+    if foundry_extended_public_keys is not None:
+        foundry_extended_public_keys = _expect_str_list(
+            foundry_extended_public_keys,
+            "foundryExtendedPublicKeys",
+        )
+
     return KaspaExitProposalBuilderConfig(
         network=_expect_str(data.get("network"), "network"),
         l2_chain_id=int(data["l2ChainId"]),
@@ -82,6 +105,7 @@ def load_builder_config(path: str | Path) -> KaspaExitProposalBuilderConfig:
         ),
         l2_confirmation_blocks=int(data.get("l2ConfirmationBlocks", 12)),
         proposed_by=str(data.get("proposedBy") or "igra-exit-proposal-builder"),
+        foundry_extended_public_keys=foundry_extended_public_keys,
     )
 
 
@@ -269,6 +293,10 @@ class KaspaExitProposalBuilder:
         self._validate_federation()
         exit_requests = self._validate_and_extract_exits(bundle)
         self._validate_unsigned_manifest(unsigned_manifest, unsigned_verify_report)
+        unsigned_bundle_hex, wallet_hex_normalization = normalize_pst_xpub_versions(
+            unsigned_bundle_hex,
+            self.config.network,
+        )
 
         evidence = self._build_evidence(
             bundle=bundle,
@@ -276,6 +304,7 @@ class KaspaExitProposalBuilder:
             build_input=build_input,
             unsigned_manifest=unsigned_manifest,
             unsigned_verify_report=unsigned_verify_report,
+            wallet_hex_normalization=wallet_hex_normalization,
         )
         evidence_hash = canonical_json_hash(evidence)
         artifact_hashes = dict(bundle.manifest.get("artifactChecksums") or {})
@@ -283,6 +312,10 @@ class KaspaExitProposalBuilder:
         artifact_hashes["unsignedBundleHexSha256"] = hashlib.sha256(
             unsigned_bundle_hex.encode()
         ).hexdigest()
+        if wallet_hex_normalization and wallet_hex_normalization.get("applied"):
+            artifact_hashes["preNormalizationUnsignedBundleHexSha256"] = (
+                wallet_hex_normalization["originalBundleHexSha256"]
+            )
         if build_input:
             artifact_hashes["buildInputSha256"] = _sha256_json(build_input)
 
@@ -327,9 +360,9 @@ class KaspaExitProposalBuilder:
         if submit_proposal:
             serializer = KaspaTxProposalCreateSerializer(
                 data={
-                    "unsignedBundleHex": unsigned_bundle_hex,
-                    "exitBatch": str(exit_batch.pk),
-                    "proposedBy": self.config.proposed_by,
+                    "unsigned_bundle_hex": unsigned_bundle_hex,
+                    "exit_batch": str(exit_batch.pk),
+                    "proposed_by": self.config.proposed_by,
                     "origin": {
                         "kind": "igra-l2-exit",
                         "builder": "safe-transaction-service",
@@ -396,7 +429,9 @@ class KaspaExitProposalBuilder:
             "fee_kas": _sompi_to_kas(fee_sompi),
             "multisig": {
                 "minimum_signatures": self.federation.threshold,
-                "extended_public_keys": self.federation.xpubs,
+                "extended_public_keys": (
+                    self.config.foundry_extended_public_keys or self.federation.xpubs
+                ),
                 "ecdsa": self.federation.ecdsa,
             },
         }
@@ -565,6 +600,7 @@ class KaspaExitProposalBuilder:
         build_input: dict[str, Any] | None,
         unsigned_manifest: dict[str, Any],
         unsigned_verify_report: dict[str, Any],
+        wallet_hex_normalization: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "schemaVersion": 1,
@@ -624,6 +660,7 @@ class KaspaExitProposalBuilder:
                 "buildInput": build_input,
                 "unsignedManifest": unsigned_manifest,
                 "unsignedVerify": unsigned_verify_report,
+                "walletHexNormalization": wallet_hex_normalization,
             },
             "verificationCommands": [
                 "cast igra verify-bundle-integral --manifest <bundle>/manifest.json",
@@ -734,6 +771,107 @@ def normalize_locking_utxo(
     return utxo
 
 
+def normalize_pst_xpub_versions(
+    unsigned_bundle_hex: str,
+    network: str,
+) -> tuple[str, dict[str, Any] | None]:
+    target_version = _KASPA_PUBLIC_XPUB_VERSIONS.get(network)
+    if target_version is None:
+        return unsigned_bundle_hex, None
+
+    try:
+        wallet_bytes = bytes.fromhex(unsigned_bundle_hex)
+    except ValueError as exc:
+        raise KaspaExitProposalBuilderError("unsigned PST hex is invalid") from exc
+
+    replacements: list[dict[str, Any]] = []
+    normalized = wallet_bytes
+    candidates = {match.group(1) for match in _BASE58_XPUB_RE.finditer(wallet_bytes)}
+    for candidate in sorted(candidates):
+        try:
+            decoded = _base58check_decode(candidate.decode())
+        except ValueError:
+            continue
+        source_version = decoded[:4]
+        if source_version not in _KASPA_PUBLIC_XPUB_VERSIONS.values():
+            continue
+        if source_version == target_version:
+            continue
+
+        rewritten = _base58check_encode(target_version + decoded[4:]).encode()
+        if len(rewritten) != len(candidate):
+            raise KaspaExitProposalBuilderError(
+                "xpub network rewrite changed encoded length"
+            )
+        count = normalized.count(candidate)
+        if count <= 0:
+            continue
+        normalized = normalized.replace(candidate, rewritten)
+        replacements.append(
+            {
+                "from": candidate.decode(),
+                "to": rewritten.decode(),
+                "fromVersion": source_version.hex(),
+                "toVersion": target_version.hex(),
+                "count": count,
+            }
+        )
+
+    if not replacements:
+        return unsigned_bundle_hex, None
+
+    normalized_hex = normalized.hex()
+    return normalized_hex, {
+        "applied": True,
+        "targetNetwork": network,
+        "targetXpubVersion": target_version.hex(),
+        "originalBundleHex": unsigned_bundle_hex,
+        "originalBundleHexSha256": hashlib.sha256(
+            unsigned_bundle_hex.encode()
+        ).hexdigest(),
+        "normalizedBundleHexSha256": hashlib.sha256(
+            normalized_hex.encode()
+        ).hexdigest(),
+        "replacements": replacements,
+        "reason": (
+            "Foundry and kaspawallet can encode the same BIP32 public key with "
+            "different Kaspa network xpub versions on devnet/test networks. "
+            "Only PST signer metadata is rewritten; transaction inputs, outputs, "
+            "scripts, and payload are unchanged."
+        ),
+    }
+
+
+def _base58check_decode(value: str) -> bytes:
+    number = 0
+    for char in value:
+        try:
+            digit = _BASE58_INDEX[char]
+        except KeyError as exc:
+            raise ValueError("invalid base58 character") from exc
+        number = number * 58 + digit
+
+    payload = number.to_bytes((number.bit_length() + 7) // 8, "big") if number else b""
+    payload = b"\x00" * (len(value) - len(value.lstrip("1"))) + payload
+    if len(payload) != 82:
+        raise ValueError("invalid extended key payload length")
+    checksum = hashlib.sha256(hashlib.sha256(payload[:-4]).digest()).digest()[:4]
+    if checksum != payload[-4:]:
+        raise ValueError("invalid base58 checksum")
+    return payload[:-4]
+
+
+def _base58check_encode(payload: bytes) -> str:
+    checksum = hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
+    raw = payload + checksum
+    number = int.from_bytes(raw, "big")
+    encoded = ""
+    while number:
+        number, index = divmod(number, 58)
+        encoded = _BASE58_ALPHABET[index] + encoded
+    return "1" * (len(raw) - len(raw.lstrip(b"\x00"))) + encoded
+
+
 def _validate_checks(checks: dict[str, Any]) -> None:
     global_errors = checks.get("globalErrors") or {}
     for key, value in global_errors.items():
@@ -785,6 +923,14 @@ def _expect_dict(value: Any, field: str) -> dict[str, Any]:
 def _expect_str(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value:
         raise KaspaExitProposalBuilderError(f"{field} must be a non-empty string")
+    return value
+
+
+def _expect_str_list(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise KaspaExitProposalBuilderError(f"{field} must be a non-empty array")
+    for index, item in enumerate(value):
+        _expect_str(item, f"{field}[{index}]")
     return value
 
 

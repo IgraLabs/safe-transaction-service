@@ -2,6 +2,56 @@
 
 This documents the isolated staging deployment used to verify the Kaspa native wallet integration.
 
+## Igra Exit Proposal Staging
+
+The current Igra exit proposal-builder test stack is separate from the original
+wallet-only stack below.
+
+- Server: `roman@stage-roman.igralabs.com`
+- Directory: `/home/roman/kaspa-exit-builder-codex-20260601-123722`
+- Compose project: `kaspa-exit-builder-codex-20260601-123722`
+- Docker network: `kaspa-exit-builder-codex-20260601-123722_msig`
+- Private subnet: `172.31.92.0/24`
+- EL RPC host ports: `127.0.0.1:39455` HTTP, `127.0.0.1:39456` WS
+
+This stack runs an isolated Kaspa devnet plus Igra EL. Igra L2 writes must use
+Foundry's Igra transport, not the normal EL txpool path: Foundry signs the raw
+L2 transaction, embeds it in a Kaspa transaction payload with the Igra protocol
+header, mines the configured `97b1` txid prefix, signs the Kaspa transaction,
+and submits it to kaspad. The EL side only observes the transaction after
+kaspad/ATAN/Viaduct drive the Igra block.
+
+Current devnet consensus override:
+
+```text
+--devnet-finality-depth=300
+--devnet-pruning-depth=3150
+```
+
+The pruning depth must be high enough to retain Kaspa's DAA difficulty window,
+but low enough for Viaduct to see a pruning point quickly in an isolated test
+chain. The first EL blocks start only after the initial pruning/finality window.
+
+Use the explicit Igra Foundry environment for deployment and `requestExit`
+transactions:
+
+```bash
+export FOUNDRY_IGRA_ENABLED=true
+export FOUNDRY_IGRA_EL_RPC_URL=http://127.0.0.1:39455
+export FOUNDRY_IGRA_KASPA_RPC_URL=grpc://172.31.92.10:16610
+export FOUNDRY_IGRA_EXPECTED_EL_CHAIN_ID=38833
+export FOUNDRY_IGRA_KASPA_NETWORK=devnet
+export FOUNDRY_IGRA_TX_ID_PREFIX=97b1
+export FOUNDRY_IGRA_EL_RECEIPT_TIMEOUT_SECS=900
+export FOUNDRY_IGRA_MINING_TIMEOUT_SECS=300
+```
+
+The helper `scripts/submit_igra_exit_contracts_async.py` deploys the devnet
+Mailbox, MerkleTreeHook, KasExitBridge, and initialization sequence from
+production explorer bytecode through that payload path. It submits the nonce
+sequence asynchronously; wait for one Igra finality/pruning window, then verify
+contract code at the deterministic addresses before creating exits.
+
 ## Deployment
 
 - Server: `roman@stage-roman.igralabs.com`

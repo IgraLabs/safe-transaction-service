@@ -503,6 +503,10 @@ Config schema:
   "kaspaTxIdPrefix": "97b1",
   "l2ConfirmationBlocks": 12,
   "proposedBy": "igra-exit-proposal-builder",
+  "foundryExtendedPublicKeys": [
+    "kpub...",
+    "kpub..."
+  ],
   "contracts": {
     "kasExitBridge": "0x4bb88C213d3eD9dc4bae694f1bc1bF745903b2d0",
     "mailbox": "0x3a867fCfFeC2B790970eeBDC9023E75B0a172aa7",
@@ -515,6 +519,12 @@ Config schema:
   }
 }
 ```
+
+`foundryExtendedPublicKeys` is optional. Use it when the signer-facing
+federation stores wallet-specific xpub/kdub metadata but Foundry's
+`build-exit` expects the root kpubs used to derive the canonical multisig
+address. The unsigned PST and evidence still record the public key material so
+wallets can re-derive and verify locally before signing.
 
 ## Open Implementation Decisions
 

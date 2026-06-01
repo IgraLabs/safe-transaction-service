@@ -150,6 +150,7 @@ class Command(BaseCommand):
         except KaspaExitProposalBuilderError as exc:
             raise CommandError(str(exc)) from exc
 
+        result.exit_batch.refresh_from_db()
         output = {
             "exitBatch": str(result.exit_batch.pk),
             "exitBatchStatus": result.exit_batch.status,

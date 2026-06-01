@@ -17,6 +17,7 @@ from safe_transaction_service.kaspa.services.exit_proposal import (
     KaspaExitProposalBuilder,
     KaspaExitProposalBuilderConfig,
     KaspaExitProposalBuilderError,
+    normalize_pst_xpub_versions,
 )
 
 
@@ -136,7 +137,60 @@ class TestKaspaExitProposalBuilder(TestCase):
         self.assertEqual(build_input["exits"][0]["message_id"], "0x" + "b" * 64)
         self.assertEqual(build_input["change"]["amount_sompi"], 200)
         self.assertEqual(build_input["multisig"]["minimum_signatures"], 2)
-        self.assertEqual(build_input["locking_utxos"][0]["script_public_key"]["script"], "aa20")
+        self.assertEqual(
+            build_input["locking_utxos"][0]["script_public_key"]["script"], "aa20"
+        )
+
+    def test_build_foundry_input_can_use_foundry_extended_public_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle_dir = self.write_bundle(Path(tmp))
+            config = KaspaExitProposalBuilderConfig(
+                **{
+                    **self.config.__dict__,
+                    "foundry_extended_public_keys": ["kpub-root-a", "kpub-root-b"],
+                }
+            )
+            builder = KaspaExitProposalBuilder(config=config, federation=self.federation)
+
+            build_input = builder.build_foundry_input(
+                bundle_dir=bundle_dir,
+                locking_utxos=[
+                    {
+                        "bridge_utxo": {
+                            "transaction_id": "97b1" + "0" * 60,
+                            "output_index": 0,
+                            "amount_sompi": 500,
+                            "script_public_key": "0xaa20",
+                        },
+                        "live_api_utxo": {"address": "kaspa:bridge"},
+                    }
+                ],
+                fee_sompi=100,
+            )
+
+        self.assertEqual(
+            build_input["multisig"]["extended_public_keys"],
+            ["kpub-root-a", "kpub-root-b"],
+        )
+
+    def test_normalize_pst_xpub_versions_rewrites_to_devnet(self):
+        ktub_child = (
+            "ktub28c2yq6MoXoAQGMBAXquWomkg6VbY9caC3BCGRaqtGZQuUcypSPBcfyQxFi8"
+            "W6FdDsA8xRjr2vAVRdQUz72vgNEeD2AgJ9YXh41PtnvM1b7"
+        )
+        kdub_child = (
+            "kdub5CSz6Y1Rm7cpRJWHXLAz4YR2UtrNbfSxvtGEwMZLiX3bnoG75VHqdGK9M6"
+            "YuZYWJg2oRkeBg4GeaaRJ6bFopx57TZk8ywpeoRj32xukXynF"
+        )
+        bundle_hex = (b"\x08" + ktub_child.encode() + b"\x12").hex()
+
+        normalized_hex, report = normalize_pst_xpub_versions(bundle_hex, "devnet")
+
+        self.assertIn(kdub_child.encode().hex(), normalized_hex)
+        self.assertNotIn(ktub_child.encode().hex(), normalized_hex)
+        self.assertEqual(report["targetNetwork"], "devnet")
+        self.assertEqual(report["replacements"][0]["from"], ktub_child)
+        self.assertEqual(report["replacements"][0]["to"], kdub_child)
 
     def write_bundle(self, root: Path) -> Path:
         bundle_dir = root / "keb-from-100-to-199-test.bundle"
