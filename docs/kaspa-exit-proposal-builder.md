@@ -31,6 +31,39 @@ That is an 86,400-block window. `runDelta.ts` confirms the durable model: start
 from the previous bundle checkpoint, scan `fromBlock..toBlock`, write
 `derived/checkpoint.end.json`, then advance to `toBlock + 1`.
 
+## Foundry Kaspa Transaction Creation
+
+Foundry has two Kaspa transaction creation paths, and only one is appropriate
+for the exit proposal builder.
+
+The normal Igra L2 write path lives in
+`/Users/user/Source/igra/foundry/crates/common/src/provider/igra_transport.rs`.
+It builds a raw L2 payload transaction with protocol header `0x94`
+(`version=0x9`, `txTypeId=0x4`), mines the 4-byte payload nonce until the Kaspa
+txid matches the configured prefix, signs with a local Kaspa private key, and
+broadcasts immediately. This is correct for ordinary `cast send` style Igra L2
+transactions, but it is not suitable for the observer because it requires
+private-key access.
+
+The bridge exit path lives in
+`/Users/user/Source/igra/foundry/crates/common/src/igra_exit.rs` and is exposed
+through `cast igra build-exit` in
+`/Users/user/Source/igra/foundry/crates/cast/src/cmd/igra.rs`. It builds an
+unsigned old-kaspawallet `PartiallySignedTransaction` from public material:
+locking UTXOs, verified exit requests, kpubs, threshold, change path, fee, and
+network. Its protocol header is `0x93` (`version=0x9`, `txTypeId=0x3`), and the
+payload is:
+
+```text
+0x93 || message_id_1 || ... || message_id_n || nonce_u32_be
+```
+
+This is the path the service should call first, either by shelling out to the
+existing `cast igra build-exit` binary or by wrapping the same Rust function in a
+small helper. The signer-side local verification path is already present as
+`cast igra verify-exit`, with companion address checks in `derive-msig-address`,
+`verify-msig-address`, `check-msig-path`, and `verify-bundle-integral`.
+
 ## Real Exit-35 Fixture
 
 The real local fixture is available at:
@@ -359,8 +392,9 @@ identified, audited, and re-verified by wallets.
 3. Collect logs, receipts, traces, contract checkpoints, and raw tx material.
 4. Run the L2, tree, root replay, and contract preverification gates.
 5. Select live Kaspa bridge UTXOs.
-6. Build unsigned exit input JSON and unsigned PST hex using the existing audited
-   builder path. This process uses kpubs only.
+6. Build unsigned exit input JSON and unsigned PST hex through the Foundry
+   `cast igra build-exit` / `build_unsigned_exit` path. This process uses kpubs
+   only.
 7. Inspect the PST through `kaspa-pst`.
 8. Store `KaspaExitBatch` and `KaspaExitRequest` rows with evidence.
 9. Create a `KaspaTxProposal` linked to the batch.
