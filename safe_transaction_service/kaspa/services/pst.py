@@ -26,12 +26,22 @@ class KaspaPstClient:
         self.helper_path = helper_path or settings.KASPA_PST_HELPER_PATH
         self.timeout = timeout or settings.KASPA_PST_HELPER_TIMEOUT
 
-    def inspect(self, bundle_hex: str, network: str) -> dict[str, Any]:
+    def inspect(
+        self,
+        bundle_hex: str,
+        network: str,
+        federation_xpubs: list[str] | None = None,
+        threshold: int | None = None,
+        ecdsa: bool = False,
+    ) -> dict[str, Any]:
         return self._run(
             "inspect",
             {
                 "network": network,
                 "bundleHex": bundle_hex,
+                "federationXpubs": federation_xpubs or [],
+                "threshold": threshold or 0,
+                "ecdsa": ecdsa,
             },
         )
 
@@ -40,6 +50,9 @@ class KaspaPstClient:
         current_bundle_hex: str,
         signed_bundle_hex: str,
         network: str,
+        federation_xpubs: list[str] | None = None,
+        threshold: int | None = None,
+        ecdsa: bool = False,
     ) -> dict[str, Any]:
         return self._run(
             "merge",
@@ -47,6 +60,9 @@ class KaspaPstClient:
                 "network": network,
                 "currentBundleHex": current_bundle_hex,
                 "signedBundleHex": signed_bundle_hex,
+                "federationXpubs": federation_xpubs or [],
+                "threshold": threshold or 0,
+                "ecdsa": ecdsa,
             },
         )
 
@@ -55,10 +71,16 @@ class KaspaPstClient:
         bundle_hex: str,
         network: str,
         rpc_url: str | None = None,
+        federation_xpubs: list[str] | None = None,
+        threshold: int | None = None,
+        ecdsa: bool = False,
     ) -> dict[str, Any]:
         payload = {
             "network": network,
             "bundleHex": bundle_hex,
+            "federationXpubs": federation_xpubs or [],
+            "threshold": threshold or 0,
+            "ecdsa": ecdsa,
         }
         if rpc_url:
             payload["rpcUrl"] = rpc_url

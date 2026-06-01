@@ -177,7 +177,11 @@ class KaspaTxProposalCreateSerializer(serializers.Serializer):
         federation: KaspaFederation = self.context["federation"]
         try:
             inspection = get_pst_client().inspect(
-                attrs["unsigned_bundle_hex"], federation.network
+                attrs["unsigned_bundle_hex"],
+                federation.network,
+                federation_xpubs=federation.xpubs,
+                threshold=federation.threshold,
+                ecdsa=federation.ecdsa,
             )
         except KaspaPstError as exc:
             raise ValidationError(str(exc)) from exc
@@ -279,6 +283,9 @@ class KaspaTxSignatureCreateSerializer(serializers.Serializer):
                     proposal.merged_bundle_hex,
                     signed_bundle_hex,
                     proposal.federation.network,
+                    federation_xpubs=proposal.federation.xpubs,
+                    threshold=proposal.federation.threshold,
+                    ecdsa=proposal.federation.ecdsa,
                 )
             except KaspaPstError as exc:
                 raise ValidationError(str(exc)) from exc
@@ -347,6 +354,9 @@ class KaspaBroadcastSerializer(serializers.Serializer):
                 proposal.merged_bundle_hex,
                 proposal.federation.network,
                 rpc_url=rpc_url or None,
+                federation_xpubs=proposal.federation.xpubs,
+                threshold=proposal.federation.threshold,
+                ecdsa=proposal.federation.ecdsa,
             )
         except KaspaPstError as exc:
             KaspaBroadcastAttempt.objects.create(

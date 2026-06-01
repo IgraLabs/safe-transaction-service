@@ -21,6 +21,10 @@ kaspa-pst merge
 kaspa-pst broadcast
 ```
 
+The service sends the federation root xpub set, threshold, and ECDSA flag to the
+helper on every operation. The helper must derive every input path and reject a
+bundle if its per-input pubkey slots do not match the registered federation.
+
 The expected wallet flow is:
 
 ```text
