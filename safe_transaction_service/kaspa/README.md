@@ -53,3 +53,12 @@ attached to a verified `KaspaExitBatch`.
 The service stores public kpubs, the canonical bridge address, verified event
 material, artifact hashes, and the unsigned transaction. It must not store Kaspa
 wallet private keys.
+
+The proposal-builder entrypoint is:
+
+```text
+python manage.py build_kaspa_exit_proposal --config builder.json --federation <uuid> --bundle-dir <keb.bundle> --locking-utxos-json funding-utxos.json
+```
+
+It validates the configured Igra chain/contracts, records the exit evidence, and
+submits the unsigned PST through the same proposal validation path as wallets.

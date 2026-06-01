@@ -462,6 +462,60 @@ identified, audited, and re-verified by wallets.
 10. Wallets fetch the proposal and evidence, re-run verification locally, sign,
     and submit signed PST bundles back to Safe service.
 
+## Safe Service Builder Command
+
+The first implementation lives in this repository as a Django management command:
+
+```text
+python manage.py build_kaspa_exit_proposal \
+  --config /path/to/builder-config.json \
+  --federation <kaspa-federation-uuid> \
+  --bundle-dir /path/to/keb-from-X-to-Y.bundle \
+  --locking-utxos-json /path/to/funding-utxos.json
+```
+
+The command validates the KEB bundle, checks Igra finality unless
+`--skip-finality-check` is passed, builds the unsigned PST through
+`cast igra build-exit`, verifies it through `cast igra verify-exit`, creates a
+`KaspaExitBatch`, records every successful exit as `KaspaExitRequest`, then
+submits the unsigned PST through the existing proposal serializer.
+
+For prebuilt artifacts, such as the exit-35 fixture, the Foundry build step can
+be skipped:
+
+```text
+python manage.py build_kaspa_exit_proposal \
+  --config /path/to/builder-config.json \
+  --federation <kaspa-federation-uuid> \
+  --bundle-dir /Users/user/Desktop/Igra/Bridge/exit-35/keb-from-7344000-to-7430399-20260525T200000Z.bundle \
+  --unsigned-json /Users/user/Desktop/Igra/Bridge/exit-35/exit-35-official-bridge.unsigned.json \
+  --unsigned-hex /Users/user/Desktop/Igra/Bridge/exit-35/exit-35-official-bridge.unsigned.hex \
+  --unsigned-verify-json /Users/user/Desktop/Igra/Bridge/exit-35/exit-35-unsigned-verify.json
+```
+
+Config schema:
+
+```json
+{
+  "network": "mainnet",
+  "l2ChainId": 38833,
+  "igraRpcUrl": "https://rpc.igralabs.com:8545",
+  "kaspaTxIdPrefix": "97b1",
+  "l2ConfirmationBlocks": 12,
+  "proposedBy": "igra-exit-proposal-builder",
+  "contracts": {
+    "kasExitBridge": "0x4bb88C213d3eD9dc4bae694f1bc1bF745903b2d0",
+    "mailbox": "0x3a867fCfFeC2B790970eeBDC9023E75B0a172aa7",
+    "merkleTreeHook": "0x75719C858e0c73e07128F95B2C466d142490e933"
+  },
+  "bridge": {
+    "address": "kaspa:ppvnxxzm0rr37zpnwux2f2ntvfpr4uqdpm7zsvsztg3en92r7gs0wkmr72q9n",
+    "scriptPublicKey": "aa205933185b78c71f0833770ca4aa6b62423af00d0efc2832025a23999543f220f787",
+    "derivationPath": "m/0/0/1"
+  }
+}
+```
+
 ## Open Implementation Decisions
 
 - Whether the first live observer shells out to the existing TypeScript/Rust
