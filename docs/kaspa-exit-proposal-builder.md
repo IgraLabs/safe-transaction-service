@@ -31,6 +31,96 @@ That is an 86,400-block window. `runDelta.ts` confirms the durable model: start
 from the previous bundle checkpoint, scan `fromBlock..toBlock`, write
 `derived/checkpoint.end.json`, then advance to `toBlock + 1`.
 
+## Real Exit-35 Fixture
+
+The real local fixture is available at:
+
+```text
+/Users/user/Desktop/Igra/Bridge/exit-35
+```
+
+Exit-35 is an unsigned production bridge proposal that has not been signed or
+broadcast.
+
+Observed values:
+
+```text
+Window:              7,344,000..7,430,399
+Start checkpoint:    block 7,343,999
+Request IDs:         257..265
+Exit count:          9
+Total unlock:        138,956.00000000 KAS
+Total unlock sompi:  13,895,600,000,000
+Funding UTXO:        97b17b0ed3a21a16ba326dd83671b0f3db6537dd929317c5f05a251321a2b9b0:0
+Funding amount:      140,000.00000000 KAS
+Change:              1,043.99000000 KAS
+Fee:                 0.01000000 KAS
+Unsigned txid:       97b1697123ed1cff36a36629375202184d6b6a21da578fac514f5479e14fb84b
+Payload nonce:       60793
+Inputs:              1
+Outputs:             10
+Signed inputs:       0
+Fully signed:        false
+```
+
+Exit-35 bundle checks:
+
+```text
+Exit global errors: []
+Tree global errors: []
+Exit txs checked: 9
+Merkle inserts in window: 28
+Root replay: matched on-chain end root
+Tree start: count 699, root 0xf86d79779abe95de6a77b4ae11df08df1881b6c5aac6a430950a250d2868491e
+Tree end:   count 727, root 0x634b51d6975c755b5125101aba45d51755b68f05f9e02321f77cf6eb554deb58
+```
+
+Continuity is established by the catch-up bundle:
+
+```text
+Range:                5,184,000..7,343,999
+Exit txs checked:     142
+Merkle inserts:       371
+Root replay:          matched on-chain end root
+Start for exit-35:    catch-up end checkpoint
+```
+
+The fixture has two groups of artifacts:
+
+- The canonical L2 audit bundle:
+  - `keb-from-7344000-to-7430399-20260525T200000Z.bundle/manifest.json`
+  - `derived/exit.data.json`
+  - `derived/checks.json`
+  - `derived/tree.data.json`
+  - `derived/tree.snapshot.json`
+  - `derived/checkpoint.end.json`
+  - `derived/contract.preverify.json`
+  - `raw/checkpoints.json`
+  - `raw/keb_exit_logs.json`
+  - `raw/keb_burn_logs.json`
+  - `raw/hook_inserted_logs.json`
+  - `raw/successful_exit_logs.json`
+  - `raw/tx/*.tx.json`
+  - `raw/tx/*.receipt.json`
+- The Kaspa proposal and signer-verification artifacts:
+  - `igra-official-bridge-public-keys.json`
+  - `funding-utxos.json`
+  - `exit-35-bridge-utxos-live.json`
+  - `exit-35-funding-utxo-live-check.json`
+  - `exit-35-msig-address-check.json`
+  - `exit-35-msig-path-check.json`
+  - `exit-35-official-bridge.input.json`
+  - `exit-35-official-bridge.unsigned.json`
+  - `exit-35-official-bridge.unsigned.hex`
+  - `exit-35-unsigned-verify.json`
+  - `kaspa-landing-check.json`
+  - `exit-35-artifact-sha256.txt`
+
+The proposal builder should preserve both groups. The bundle proves the L2 exit
+set and tree continuity; the Kaspa artifacts prove the public multisig address,
+selected live funding UTXO, unsigned PST, payload, mass, fee, and
+not-yet-broadcast landing state.
+
 ## Production Bridge Constants
 
 Current public bridge constants from the runbook:
@@ -201,7 +291,8 @@ Recommended schema:
   "kaspaFunding": {
     "source": "kaspa-node-or-explorer",
     "checkedAt": "2026-06-01T00:00:00Z",
-    "utxos": []
+    "utxos": [],
+    "liveCheck": {}
   },
   "unsignedTransaction": {
     "format": "kaspawallet_pst_v1",
@@ -214,14 +305,25 @@ Recommended schema:
     "mass": "0",
     "payload": "0x93..."
   },
+  "kaspaVerification": {
+    "multisigAddressCheck": {},
+    "multisigPathCheck": {},
+    "unsignedVerify": {},
+    "landingCheck": {}
+  },
   "artifactHashes": {
     "exitData": "...",
     "checks": "...",
     "treeData": "...",
     "treeSnapshot": "...",
     "fundingUtxos": "...",
+    "fundingUtxoLiveCheck": "...",
+    "multisigAddressCheck": "...",
+    "multisigPathCheck": "...",
     "unsignedJson": "...",
-    "unsignedHex": "..."
+    "unsignedHex": "...",
+    "unsignedVerify": "...",
+    "kaspaLandingCheck": "..."
   },
   "verifierCommands": [
     "cast igra verify-exit --input ... --unsigned-hex ...",
