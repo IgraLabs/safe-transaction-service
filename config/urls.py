@@ -57,6 +57,7 @@ urlpatterns_v1 = [
             "safe_transaction_service.safe_messages.urls", namespace="safe_messages"
         ),
     ),
+    path("kaspa/", include("safe_transaction_service.kaspa.urls", namespace="kaspa")),
     path(
         "tokens/", include("safe_transaction_service.tokens.urls", namespace="tokens")
     ),

@@ -133,6 +133,7 @@ LOCAL_APPS = [
     "safe_transaction_service.contracts.apps.ContractsConfig",
     "safe_transaction_service.events.apps.EventsConfig",
     "safe_transaction_service.history.apps.HistoryConfig",
+    "safe_transaction_service.kaspa.apps.KaspaConfig",
     "safe_transaction_service.safe_messages.apps.SafeMessagesConfig",
     "safe_transaction_service.tokens.apps.TokensConfig",
 ]
@@ -357,6 +358,11 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "safe_transaction_service.history.exceptions.custom_exception_handler",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
+
+# Kaspa PST helper
+# ------------------------------------------------------------------------------
+KASPA_PST_HELPER_PATH = env("KASPA_PST_HELPER_PATH", default="kaspa-pst")
+KASPA_PST_HELPER_TIMEOUT = env.int("KASPA_PST_HELPER_TIMEOUT", default=10)
 
 # CUSTOM LOGGERS LEVEL
 # ------------------------------------------------------------------------------
