@@ -78,9 +78,16 @@ The proposal-builder entrypoint is:
 python manage.py build_kaspa_exit_proposal \
   --config builder.json \
   --federation <uuid> \
-  --bundle-dir <keb.bundle> \
-  --locking-utxos-json funding-utxos.json
+  --daemon \
+  --poll-seconds 300
 ```
 
-It validates the configured Igra chain/contracts, records the exit evidence, and
-submits the unsigned PST through the same proposal validation path as wallets.
+In service mode the builder creates the next KEB bundle through the configured
+`kasExitBridge` runner, queries the configured Kaspa node RPC for live custody
+UTXOs, selects mature script-matching inputs, records the selected UTXO evidence,
+and submits the unsigned PST through the same proposal validation path as
+wallets.
+
+`--bundle-dir` and `--locking-utxos-json` are manual overrides for tests,
+backfills, or recovery. They are not the normal testnet/production operating
+mode.

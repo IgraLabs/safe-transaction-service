@@ -161,6 +161,39 @@ The Proposal Builder can run as:
 For production, prefer service mode. Manual runs are for staging, recovery,
 backfill, or investigation.
 
+## Docker Services
+
+This branch adds a Compose profile for the proposal-builder daemon:
+
+```text
+docker compose --profile kaspa up kaspa-proposal-builder
+```
+
+Required environment:
+
+```text
+KASPA_EXIT_BUILDER_CONFIG=/config/builder.json
+KASPA_FEDERATION_ID=<safe-service federation uuid>
+KASPA_EXIT_BUILDER_POLL_SECONDS=300
+KASPA_PST_HELPER_PATH=kaspa-pst
+```
+
+The API container needs Python dependencies and the `kaspa-pst` helper for PST
+inspect/merge/broadcast. The proposal-builder container additionally needs:
+
+- `kaspa-pst` with the `utxos` command
+- Foundry `cast` with `igra build-exit` and `igra verify-exit`
+- Node/npm and the `kasExitBridge` tooling, or a mounted tool directory that
+  contains it
+- KEB manifest signing key material
+- access to Igra RPC and Kaspa node RPC
+- persistent KEB reports directory
+
+Postgres and Redis are still separate services. Postgres stores durable
+federations, evidence, proposals, signatures, and broadcasts. Redis is cache and
+queue infrastructure used by the upstream service. Neither Postgres nor Redis
+stores signer private keys.
+
 ## What Runs Automatically
 
 In normal production:
@@ -174,6 +207,10 @@ Proposal Builder service
         |
         +--> creates the KEB evidence bundle from Igra RPC
         |
+        +--> queries Kaspa node RPC for custody UTXOs
+        |
+        +--> selects mature script-matching inputs
+        |
         +--> verifies exits and evidence
         |
         +--> builds unsigned Kaspa PST
@@ -186,11 +223,12 @@ Proposal Builder service
 Operators should not normally hand-create proposals. If a manual run is needed,
 use the same config and validation path as the service mode.
 
-The current Django management command accepts `--bundle-dir` because it is the
-lowest-level entrypoint and it reuses the production-proven KEB artifact format.
-That command is appropriate for staging, backfill, recovery, and tests. The
-production Proposal Builder service should wrap this by first running the Igra
-KEB generation/audit logic automatically for the next finalized window.
+The Django management command can run either one-shot or as a daemon. In daemon
+mode it creates the next KEB bundle itself by calling the configured
+`kasExitBridge` runner, then queries the configured Kaspa node RPC for live
+custody UTXOs and selects the spend inputs. `--bundle-dir` and
+`--locking-utxos-json` are retained only as manual overrides for staging,
+backfill, recovery, and tests.
 
 ## Federation Bootstrap
 

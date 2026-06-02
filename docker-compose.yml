@@ -85,6 +85,19 @@ services:
     <<: *worker
     command: docker/web/celery/scheduler/run.sh
 
+  kaspa-proposal-builder:
+    build:
+      context: .
+      dockerfile: docker/web/Dockerfile
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+    command: docker/web/run_kaspa_exit_proposal_builder.sh
+    profiles:
+      - kaspa
+
   ganache:
     image: trufflesuite/ganache:latest
     ports:
@@ -102,4 +115,3 @@ services:
       - "5555:5555"
     profiles:
       - debug
-

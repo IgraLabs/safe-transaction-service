@@ -544,29 +544,59 @@ identified, audited, and re-verified by wallets.
 
 ## Safe Service Builder Command
 
-The first implementation lives in this repository as a Django management command:
+The implementation lives in this repository as a Django management command. In
+testnet/production it should run as a daemon service:
 
 ```text
 python manage.py build_kaspa_exit_proposal \
   --config /path/to/builder-config.json \
   --federation <kaspa-federation-uuid> \
-  --bundle-dir /path/to/keb-from-X-to-Y.bundle \
-  --locking-utxos-json /path/to/funding-utxos.json
+  --cast-bin /opt/foundry/bin/cast \
+  --daemon \
+  --poll-seconds 300
 ```
 
-The command validates the KEB bundle, checks Igra finality unless
-`--skip-finality-check` is passed, builds the unsigned PST through
-`cast igra build-exit`, verifies it through `cast igra verify-exit`, creates a
-`KaspaExitBatch` or reuses the existing one for the same verified window,
-records every successful exit as `KaspaExitRequest` on first creation, then
-submits the unsigned PST as a candidate through the existing proposal serializer.
+In daemon mode, the command:
+
+1. Resolves the next KEB window from the configured KEB reports directory.
+2. Waits until that Igra `toBlock` is finalized or sufficiently confirmed.
+3. Runs the existing `kasExitBridge` `runDelta.ts` flow to create and verify the
+   KEB bundle.
+4. Queries the configured Kaspa node RPC for the canonical bridge address UTXOs.
+5. Selects live, mature, script-matching custody UTXOs.
+6. Builds the unsigned PST through `cast igra build-exit`.
+7. Verifies the unsigned PST through `cast igra verify-exit`.
+8. Creates or reuses the `KaspaExitBatch`.
+9. Stores the selected UTXO evidence with the exit evidence.
+10. Submits a candidate `KaspaTxProposal`.
+
+`--bundle-dir` and `--locking-utxos-json` still exist, but they are manual
+override paths for backfills, recovery, and tests. Normal service mode must not
+depend on a human-provided funding JSON file.
 
 Multiple candidate proposals can point to the same exit batch. This matches the
 upstream Safe flow where several pending transaction candidates can share the
 same Safe nonce, and the signed transaction is the one owners actually approve.
 
-The successful staging `daa12` run used the live Igra receipt bundle and a live
-custody UTXO:
+UTXO selection policy:
+
+```text
+1. Query the custody address once through Kaspa node RPC.
+2. Query DAG info once for virtual DAA score.
+3. Filter out wrong address, wrong script, immature coinbase, under-confirmed,
+   and below-minimum-amount outputs.
+4. Sort candidates by:
+   - non-coinbase before coinbase
+   - older block DAA score before newer
+   - larger amount before smaller when age is equal
+   - outpoint as deterministic tie-breaker
+5. Select until exits plus fee are covered, bounded by maxInputs.
+```
+
+If the selected set cannot cover exits plus fee inside `maxInputs`, the builder
+fails closed and does not submit a proposal.
+
+Manual staging/backfill still supports prebuilt bundle and UTXO JSON:
 
 ```text
 /app/.venv/bin/python manage.py build_kaspa_exit_proposal \
@@ -629,6 +659,30 @@ Config schema:
   "kaspaTxIdPrefix": "97b1",
   "l2ConfirmationBlocks": 12,
   "proposedBy": "igra-exit-proposal-builder",
+  "keb": {
+    "configPath": "/opt/kasExitBridge/config/testnet.json",
+    "reportsDir": "/var/lib/igra/keb-reports",
+    "runnerCwd": "/opt/kasExitBridge",
+    "runnerCommand": "npm run kas-exit:run-delta --",
+    "deltaBlocks": 86400,
+    "manifestSigningPrivateKey": "/run/secrets/keb_manifest_signing_priv.pem",
+    "manifestSigningPublicKey": "/run/secrets/keb_manifest_signing_pub.pem",
+    "manifestSigningKeyId": "igra-testnet-keb-2026-06",
+    "manifestSigningKeyType": "rsa",
+    "cleanupCreatedOutsideBundle": true,
+    "timeout": 1800
+  },
+  "kaspa": {
+    "rpcUrl": "stage-testnet-kaspad.internal:16210"
+  },
+  "kaspaUtxos": {
+    "helperCommand": "kaspa-pst utxos",
+    "coinbaseMaturityDaa": 1000,
+    "minConfirmationsDaa": 12,
+    "minAmountSompi": 0,
+    "maxInputs": 64,
+    "timeout": 60
+  },
   "foundryExtendedPublicKeys": [
     "kpub...",
     "kpub..."
@@ -646,6 +700,10 @@ Config schema:
 }
 ```
 
+The KEB manifest signing key is not a Kaspa custody key and cannot spend funds.
+It signs the generated evidence bundle so verifiers can detect tampering. The
+proposal-builder still must not have signer wallet private keys.
+
 `foundryExtendedPublicKeys` is optional. Use it when the signer-facing
 federation stores wallet-specific xpub/kdub metadata but Foundry's
 `build-exit` expects the root kpubs used to derive the canonical multisig
@@ -660,6 +718,5 @@ wallets can re-derive and verify locally before signing.
   object storage for raw receipts/traces.
 - Whether mainnet should use the current Foundry default of 12 L2 confirmations
   or a stronger finalized-block RPC tag for proposal readiness.
-- UTXO selection policy when several canonical bridge UTXOs are available.
 - Whether evidence should be unsigned only, or also signed by an independent
   service identity that is not a Kaspa wallet key.

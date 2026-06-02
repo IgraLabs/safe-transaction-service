@@ -15,10 +15,13 @@ from safe_transaction_service.kaspa.models import (
 )
 from safe_transaction_service.kaspa.serializers import canonical_json_hash
 from safe_transaction_service.kaspa.services.exit_proposal import (
+    KaspaRpcUtxoSelector,
     KaspaExitProposalBuilder,
     KaspaExitProposalBuilderConfig,
     KaspaExitProposalBuilderError,
+    KaspaUtxoSelectorConfig,
     normalize_pst_xpub_versions,
+    strip_builder_only_build_input_fields,
 )
 
 
@@ -247,6 +250,74 @@ class TestKaspaExitProposalBuilder(TestCase):
             ["kpub-root-a", "kpub-root-b"],
         )
 
+    def test_build_foundry_input_preserves_selected_utxo_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle_dir = self.write_bundle(Path(tmp))
+            builder = KaspaExitProposalBuilder(
+                config=self.config, federation=self.federation
+            )
+            build_input = builder.build_foundry_input(
+                bundle_dir=bundle_dir,
+                locking_utxos=[
+                    {
+                        "utxo_id": "97b1" + "0" * 60 + ":0",
+                        "bridge_utxo": {
+                            "transaction_id": "97b1" + "0" * 60,
+                            "output_index": 0,
+                            "amount_sompi": 500,
+                            "script_public_key": "0xaa20",
+                        },
+                        "live_api_utxo": {"address": "kaspa:bridge"},
+                        "selection": {"eligible": True},
+                    }
+                ],
+                fee_sompi=100,
+            )
+
+        self.assertIn("kaspa_funding_evidence", build_input)
+        self.assertEqual(
+            build_input["kaspa_funding_evidence"]["selectedUtxos"][0]["selection"],
+            {"eligible": True},
+        )
+        stripped = strip_builder_only_build_input_fields(build_input)
+        self.assertNotIn("kaspa_funding_evidence", stripped)
+        self.assertIn("locking_utxos", stripped)
+
+    def test_utxo_selector_prefers_mature_older_large_inputs(self):
+        selector = KaspaRpcUtxoSelector(
+            KaspaUtxoSelectorConfig(
+                coinbase_maturity_daa=1_000,
+                min_confirmations_daa=5,
+                min_amount_sompi=100,
+                max_inputs=2,
+            )
+        )
+        selector.query_address_utxos = mock.Mock(
+            return_value={
+                "virtualDaaScore": 2_000,
+                "entries": [
+                    self.utxo_entry("new-large", 0, 1_000, "aa20", 1_950),
+                    self.utxo_entry("old-small", 0, 500, "aa20", 1_000),
+                    self.utxo_entry("old-large", 0, 600, "aa20", 900),
+                    self.utxo_entry("immature-coinbase", 0, 5_000, "aa20", 1_500, True),
+                    self.utxo_entry("wrong-script", 0, 5_000, "bb20", 100),
+                ],
+            }
+        )
+
+        selected = selector.select_locking_utxos(
+            network="mainnet",
+            bridge_address="kaspa:bridge",
+            bridge_script_public_key="aa20",
+            derivation_path="m/0/0/1",
+            required_sompi=1_100,
+        )
+
+        self.assertEqual(
+            [item["utxo_id"] for item in selected],
+            ["old-large:0", "old-small:0"],
+        )
+
     def test_normalize_pst_xpub_versions_rewrites_to_devnet(self):
         ktub_child = (
             "ktub28c2yq6MoXoAQGMBAXquWomkg6VbY9caC3BCGRaqtGZQuUcypSPBcfyQxFi8"
@@ -347,3 +418,23 @@ class TestKaspaExitProposalBuilder(TestCase):
 
     def write_json(self, path: Path, value):
         path.write_text(json.dumps(value))
+
+    def utxo_entry(
+        self,
+        tx_id: str,
+        index: int,
+        amount: int,
+        script: str,
+        block_daa_score: int,
+        is_coinbase: bool = False,
+    ):
+        return {
+            "address": "kaspa:bridge",
+            "outpoint": {"transactionId": tx_id, "index": index},
+            "utxoEntry": {
+                "amount": amount,
+                "blockDaaScore": block_daa_score,
+                "isCoinbase": is_coinbase,
+                "scriptPublicKey": {"version": 0, "script": script},
+            },
+        }

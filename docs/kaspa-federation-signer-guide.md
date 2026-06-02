@@ -341,6 +341,10 @@ Proposal Builder service
         |
         +--> creates the KEB evidence bundle from Igra RPC
         |
+        +--> queries Kaspa node RPC for live custody UTXOs
+        |
+        +--> selects mature script-matching inputs
+        |
         +--> verifies the window
         |
         +--> creates a candidate proposal in Safe Transaction Service
@@ -359,10 +363,11 @@ Manual runs are still useful, but they are operator actions:
 Manual mode must use the same config, same federation id, and same validation
 rules as the service mode. It must not bypass evidence checks.
 
-The current management command accepts an existing `--bundle-dir`. That is the
-lowest-level entrypoint for staging, backfill, and recovery. In production, the
-Proposal Builder service should run the same KEB generation and verification
-logic automatically before calling that proposal creation path.
+The management command can still accept an existing `--bundle-dir` and
+`--locking-utxos-json`, but those are manual override paths for staging,
+backfill, and recovery. In production, the Proposal Builder service creates the
+KEB bundle itself and selects live custody UTXOs from the configured Kaspa node
+RPC.
 
 Signers should think about the system like this:
 

@@ -2,11 +2,15 @@
 import hashlib
 import json
 import re
+import shlex
 import subprocess
 import tempfile
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +36,37 @@ class KaspaExitProposalBuilderError(Exception):
 
 
 @dataclass(frozen=True)
+class KebBundleRunnerConfig:
+    config_path: str | None = None
+    reports_dir: str | None = None
+    runner_cwd: str | None = None
+    runner_command: list[str] | None = None
+    delta_blocks: int = 86_400
+    start_block: int | None = None
+    end_block: int | None = None
+    previous_checkpoint_file: str | None = None
+    contract_expected_values_file: str | None = None
+    manifest_signing_private_key: str | None = None
+    manifest_signing_public_key: str | None = None
+    manifest_signing_key_id: str | None = None
+    manifest_signing_key_type: str | None = None
+    cleanup_created_outside_bundle: bool = True
+    timeout: int = 1_800
+
+
+@dataclass(frozen=True)
+class KaspaUtxoSelectorConfig:
+    rpc_url: str | None = None
+    api_url: str | None = None
+    helper_command: list[str] | None = None
+    timeout: int = 60
+    coinbase_maturity_daa: int = 1_000
+    min_confirmations_daa: int = 0
+    min_amount_sompi: int = 0
+    max_inputs: int = 64
+
+
+@dataclass(frozen=True)
 class KaspaExitProposalBuilderConfig:
     network: str
     l2_chain_id: int
@@ -46,6 +81,8 @@ class KaspaExitProposalBuilderConfig:
     l2_confirmation_blocks: int = 12
     proposed_by: str = "igra-exit-proposal-builder"
     foundry_extended_public_keys: list[str] | None = None
+    keb: KebBundleRunnerConfig | None = None
+    kaspa_utxos: KaspaUtxoSelectorConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +112,9 @@ def load_builder_config(path: str | Path) -> KaspaExitProposalBuilderConfig:
     data = _load_json(Path(path))
     contracts = _expect_dict(data.get("contracts"), "contracts")
     bridge = _expect_dict(data.get("bridge"), "bridge")
+    kaspa = data.get("kaspa") or {}
+    if not isinstance(kaspa, dict):
+        raise KaspaExitProposalBuilderError("kaspa must be an object")
     foundry_extended_public_keys = data.get("foundryExtendedPublicKeys")
     if foundry_extended_public_keys is not None:
         foundry_extended_public_keys = _expect_str_list(
@@ -106,7 +146,80 @@ def load_builder_config(path: str | Path) -> KaspaExitProposalBuilderConfig:
         l2_confirmation_blocks=int(data.get("l2ConfirmationBlocks", 12)),
         proposed_by=str(data.get("proposedBy") or "igra-exit-proposal-builder"),
         foundry_extended_public_keys=foundry_extended_public_keys,
+        keb=_parse_keb_runner_config(data.get("keb")),
+        kaspa_utxos=_parse_kaspa_utxo_selector_config(
+            data.get("kaspaUtxos") or kaspa.get("utxos"),
+            default_rpc_url=kaspa.get("rpcUrl") or data.get("kaspaRpcUrl"),
+        ),
     )
+
+
+def _parse_keb_runner_config(value: Any) -> KebBundleRunnerConfig | None:
+    if value is None:
+        return None
+    data = _expect_dict(value, "keb")
+    return KebBundleRunnerConfig(
+        config_path=data.get("configPath") or data.get("config"),
+        reports_dir=data.get("reportsDir"),
+        runner_cwd=data.get("runnerCwd") or data.get("cwd"),
+        runner_command=_parse_command(data.get("runnerCommand") or data.get("command")),
+        delta_blocks=int(data.get("deltaBlocks", 86_400)),
+        start_block=_optional_int(data.get("startBlock")),
+        end_block=_optional_int(data.get("endBlock")),
+        previous_checkpoint_file=data.get("previousCheckpointFile"),
+        contract_expected_values_file=data.get("contractExpectedValuesFile"),
+        manifest_signing_private_key=data.get("manifestSigningPrivateKey"),
+        manifest_signing_public_key=data.get("manifestSigningPublicKey"),
+        manifest_signing_key_id=data.get("manifestSigningKeyId"),
+        manifest_signing_key_type=data.get("manifestSigningKeyType"),
+        cleanup_created_outside_bundle=bool(
+            data.get("cleanupCreatedOutsideBundle", True)
+        ),
+        timeout=int(data.get("timeout", 1_800)),
+    )
+
+
+def _parse_kaspa_utxo_selector_config(
+    value: Any,
+    *,
+    default_rpc_url: str | None,
+) -> KaspaUtxoSelectorConfig | None:
+    if value is None and not default_rpc_url:
+        return None
+    data = _expect_dict(value or {}, "kaspaUtxos")
+    rpc_url = data.get("rpcUrl") or default_rpc_url
+    helper_command = _parse_command(data.get("helperCommand"))
+    if rpc_url and not helper_command and not data.get("apiUrl"):
+        helper_command = ["kaspa-pst", "utxos"]
+    return KaspaUtxoSelectorConfig(
+        rpc_url=rpc_url,
+        api_url=data.get("apiUrl"),
+        helper_command=helper_command,
+        timeout=int(data.get("timeout", 60)),
+        coinbase_maturity_daa=int(data.get("coinbaseMaturityDaa", 1_000)),
+        min_confirmations_daa=int(data.get("minConfirmationsDaa", 0)),
+        min_amount_sompi=int(data.get("minAmountSompi", 0)),
+        max_inputs=int(data.get("maxInputs", 64)),
+    )
+
+
+def _parse_command(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return [_expect_str(item, "command[]") for item in value]
+    if isinstance(value, str):
+        parts = shlex.split(value)
+        if not parts:
+            raise KaspaExitProposalBuilderError("command cannot be empty")
+        return parts
+    raise KaspaExitProposalBuilderError("command must be a string or array")
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
 
 
 class L2FinalityClient:
@@ -192,7 +305,10 @@ class FoundryExitBuilder:
             input_path = tmp_path / "exit.input.json"
             manifest_path = tmp_path / "exit.unsigned.json"
             hex_path = tmp_path / "exit.unsigned.hex"
-            input_path.write_text(json.dumps(build_input, indent=2) + "\n")
+            input_path.write_text(
+                json.dumps(strip_builder_only_build_input_fields(build_input), indent=2)
+                + "\n"
+            )
 
             cmd = [
                 self.cast_bin,
@@ -269,6 +385,381 @@ class FoundryExitBuilder:
         return completed
 
 
+class KebBundleRunner:
+    BUNDLE_RE = re.compile(r"^keb-from-(\d+)-to-(\d+)-(\d{8}T\d{6}Z)\.bundle$")
+
+    def __init__(self, config: KebBundleRunnerConfig):
+        self.config = config
+
+    def next_window(self) -> tuple[int, int] | None:
+        if self.config.start_block is not None:
+            to_block = (
+                self.config.end_block
+                if self.config.end_block is not None
+                else self.config.start_block + self.config.delta_blocks - 1
+            )
+            return self.config.start_block, to_block
+
+        latest = self._latest_bundle()
+        if latest is None:
+            return None
+        from_block = latest[1] + 1
+        to_block = (
+            self.config.end_block
+            if self.config.end_block is not None
+            else from_block + self.config.delta_blocks - 1
+        )
+        return from_block, to_block
+
+    def run_delta(self) -> Path:
+        if not self.config.reports_dir:
+            raise KaspaExitProposalBuilderError(
+                "KEB reports_dir is required to create a bundle"
+            )
+
+        reports_dir = Path(self.config.reports_dir)
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        started_at = time.time()
+        cmd = list(self.config.runner_command or ["npm", "run", "kas-exit:run-delta", "--"])
+        cmd.extend(["--reports-dir", str(reports_dir), "--runs", "1"])
+
+        if self.config.config_path:
+            cmd.extend(["--config", self.config.config_path])
+        if self.config.delta_blocks:
+            cmd.extend(["--delta-blocks", str(self.config.delta_blocks)])
+        if self.config.start_block is not None:
+            cmd.extend(["--start-block", str(self.config.start_block)])
+        if self.config.end_block is not None:
+            cmd.extend(["--end-block", str(self.config.end_block)])
+        if self.config.previous_checkpoint_file:
+            cmd.extend(["--previous-checkpoint-file", self.config.previous_checkpoint_file])
+        if self.config.contract_expected_values_file:
+            cmd.extend(
+                [
+                    "--contract-expected-values-file",
+                    self.config.contract_expected_values_file,
+                ]
+            )
+        if self.config.manifest_signing_private_key:
+            cmd.extend(
+                [
+                    "--manifest-signing-private-key",
+                    self.config.manifest_signing_private_key,
+                ]
+            )
+        if self.config.manifest_signing_public_key:
+            cmd.extend(
+                [
+                    "--manifest-signing-public-key",
+                    self.config.manifest_signing_public_key,
+                ]
+            )
+        if self.config.manifest_signing_key_id:
+            cmd.extend(["--manifest-signing-key-id", self.config.manifest_signing_key_id])
+        if self.config.manifest_signing_key_type:
+            cmd.extend(
+                ["--manifest-signing-key-type", self.config.manifest_signing_key_type]
+            )
+        if self.config.cleanup_created_outside_bundle:
+            cmd.append("--cleanup-created-outside-bundle")
+
+        try:
+            completed = subprocess.run(
+                cmd,
+                capture_output=True,
+                check=False,
+                cwd=self.config.runner_cwd,
+                text=True,
+                timeout=self.config.timeout,
+            )
+        except FileNotFoundError as exc:
+            raise KaspaExitProposalBuilderError(
+                f"KEB runner command not found: {cmd[0]}"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise KaspaExitProposalBuilderError(
+                f"KEB runner timed out after {self.config.timeout}s"
+            ) from exc
+        if completed.returncode != 0:
+            message = completed.stderr.strip() or completed.stdout.strip()
+            raise KaspaExitProposalBuilderError(
+                message or f"KEB runner failed: {' '.join(cmd)}"
+            )
+
+        candidates = self._bundles_created_since(started_at - 1)
+        if not candidates:
+            latest = self._latest_bundle()
+            if latest is None:
+                raise KaspaExitProposalBuilderError(
+                    "KEB runner succeeded but no bundle was found"
+                )
+            return latest[2]
+        return sorted(candidates, key=lambda item: item[2].stat().st_mtime)[-1][2]
+
+    def _latest_bundle(self) -> tuple[int, int, Path] | None:
+        bundles = self._discover_bundles()
+        if not bundles:
+            return None
+        return sorted(bundles, key=lambda item: (item[1], item[0], item[2].name))[-1]
+
+    def _bundles_created_since(self, timestamp: float) -> list[tuple[int, int, Path]]:
+        return [item for item in self._discover_bundles() if item[2].stat().st_mtime >= timestamp]
+
+    def _discover_bundles(self) -> list[tuple[int, int, Path]]:
+        if not self.config.reports_dir:
+            return []
+        reports_dir = Path(self.config.reports_dir)
+        if not reports_dir.is_dir():
+            return []
+
+        out: list[tuple[int, int, Path]] = []
+        for path in reports_dir.iterdir():
+            if not path.is_dir():
+                continue
+            match = self.BUNDLE_RE.match(path.name)
+            if not match:
+                continue
+            out.append((int(match.group(1)), int(match.group(2)), path))
+        return out
+
+
+class KaspaRpcUtxoSelector:
+    def __init__(self, config: KaspaUtxoSelectorConfig):
+        self.config = config
+
+    def select_locking_utxos(
+        self,
+        *,
+        network: str,
+        bridge_address: str,
+        bridge_script_public_key: str,
+        derivation_path: str,
+        required_sompi: int,
+    ) -> list[dict[str, Any]]:
+        report = self.query_address_utxos(
+            network=network,
+            bridge_address=bridge_address,
+            bridge_script_public_key=bridge_script_public_key,
+        )
+        current_daa = int(report["virtualDaaScore"])
+        normalized = [
+            self._normalize_entry(
+                entry,
+                bridge_address=bridge_address,
+                bridge_script_public_key=bridge_script_public_key,
+                derivation_path=derivation_path,
+                current_daa=current_daa,
+            )
+            for entry in report["entries"]
+        ]
+        candidates = [entry for entry in normalized if entry["selection"]["eligible"]]
+        candidates.sort(
+            key=lambda item: (
+                item["selection"]["isCoinbase"],
+                item["selection"]["blockDaaScore"],
+                -item["bridge_utxo"]["amount_sompi"],
+                item["bridge_utxo"]["transaction_id"],
+                item["bridge_utxo"]["output_index"],
+            )
+        )
+
+        selected: list[dict[str, Any]] = []
+        total = 0
+        for entry in candidates:
+            if len(selected) >= self.config.max_inputs:
+                break
+            selected.append(entry)
+            total += entry["bridge_utxo"]["amount_sompi"]
+            if total >= required_sompi:
+                break
+
+        if total < required_sompi:
+            raise KaspaExitProposalBuilderError(
+                "not enough mature bridge UTXOs for exit proposal: "
+                f"required {required_sompi} sompi, selected {total} sompi, "
+                f"eligible {len(candidates)} of {len(normalized)} UTXOs, "
+                f"max inputs {self.config.max_inputs}"
+            )
+        return selected
+
+    def query_address_utxos(
+        self,
+        *,
+        network: str,
+        bridge_address: str,
+        bridge_script_public_key: str,
+    ) -> dict[str, Any]:
+        if self.config.helper_command:
+            return self._query_with_helper(
+                network=network,
+                bridge_address=bridge_address,
+                bridge_script_public_key=bridge_script_public_key,
+            )
+        if self.config.api_url:
+            return self._query_with_http_api(bridge_address)
+        raise KaspaExitProposalBuilderError(
+            "Kaspa UTXO selector requires kaspaUtxos.helperCommand or kaspaUtxos.apiUrl"
+        )
+
+    def _query_with_helper(
+        self,
+        *,
+        network: str,
+        bridge_address: str,
+        bridge_script_public_key: str,
+    ) -> dict[str, Any]:
+        if not self.config.rpc_url:
+            raise KaspaExitProposalBuilderError(
+                "kaspaUtxos.rpcUrl is required when using a Kaspa RPC helper"
+            )
+        payload = {
+            "network": network,
+            "rpcUrl": self.config.rpc_url,
+            "address": bridge_address,
+            "scriptPublicKey": bridge_script_public_key,
+            "coinbaseMaturityDaa": self.config.coinbase_maturity_daa,
+            "minConfirmationsDaa": self.config.min_confirmations_daa,
+            "minAmountSompi": self.config.min_amount_sompi,
+            "maxInputs": self.config.max_inputs,
+        }
+        try:
+            completed = subprocess.run(
+                self.config.helper_command,
+                input=json.dumps(payload),
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=self.config.timeout,
+            )
+        except FileNotFoundError as exc:
+            raise KaspaExitProposalBuilderError(
+                f"Kaspa UTXO helper not found: {self.config.helper_command[0]}"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise KaspaExitProposalBuilderError(
+                f"Kaspa UTXO helper timed out after {self.config.timeout}s"
+            ) from exc
+        if completed.returncode != 0:
+            message = completed.stderr.strip() or completed.stdout.strip()
+            raise KaspaExitProposalBuilderError(
+                message or "Kaspa UTXO helper failed"
+            )
+        return self._validate_utxo_report(completed.stdout, source="kaspa-rpc-helper")
+
+    def _query_with_http_api(self, bridge_address: str) -> dict[str, Any]:
+        base = self.config.api_url.rstrip("/")
+        url = f"{base}/addresses/{urllib.parse.quote(bridge_address, safe='')}/utxos"
+        request = urllib.request.Request(url, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=self.config.timeout) as response:
+                body = response.read().decode()
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise KaspaExitProposalBuilderError(
+                f"failed to query Kaspa UTXO API {url}: {exc}"
+            ) from exc
+        data = json.loads(body)
+        if not isinstance(data, list):
+            raise KaspaExitProposalBuilderError("Kaspa UTXO API returned non-array JSON")
+        return {
+            "source": "kaspa-http-api",
+            "address": bridge_address,
+            "checkedAt": _utc_now(),
+            "virtualDaaScore": 0,
+            "entries": data,
+        }
+
+    def _validate_utxo_report(self, raw: str, *, source: str) -> dict[str, Any]:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise KaspaExitProposalBuilderError(
+                "Kaspa UTXO helper returned invalid JSON"
+            ) from exc
+        if not isinstance(data, dict):
+            raise KaspaExitProposalBuilderError("Kaspa UTXO helper returned non-object JSON")
+        if "entries" not in data or not isinstance(data["entries"], list):
+            raise KaspaExitProposalBuilderError(
+                "Kaspa UTXO helper response must contain entries array"
+            )
+        data.setdefault("source", source)
+        data.setdefault("checkedAt", _utc_now())
+        if "virtualDaaScore" not in data:
+            raise KaspaExitProposalBuilderError(
+                "Kaspa UTXO helper response must contain virtualDaaScore"
+            )
+        return data
+
+    def _normalize_entry(
+        self,
+        entry: dict[str, Any],
+        *,
+        bridge_address: str,
+        bridge_script_public_key: str,
+        derivation_path: str,
+        current_daa: int,
+    ) -> dict[str, Any]:
+        outpoint = _expect_dict(entry.get("outpoint"), "utxo.outpoint")
+        utxo_entry = _expect_dict(entry.get("utxoEntry"), "utxo.utxoEntry")
+        script_public_key = _expect_dict(
+            utxo_entry.get("scriptPublicKey"), "utxo.utxoEntry.scriptPublicKey"
+        )
+        transaction_id = _expect_str(
+            outpoint.get("transactionId") or outpoint.get("transaction_id"),
+            "utxo.outpoint.transactionId",
+        )
+        output_index = int(outpoint.get("index"))
+        amount_sompi = int(utxo_entry.get("amount"))
+        script = _normalize_hex(
+            str(script_public_key.get("script") or script_public_key.get("scriptPublicKey"))
+        )
+        is_coinbase = bool(utxo_entry.get("isCoinbase", utxo_entry.get("is_coinbase", False)))
+        block_daa_score = int(
+            utxo_entry.get("blockDaaScore", utxo_entry.get("block_daa_score", 0))
+        )
+        script_matches = script == _normalize_hex(bridge_script_public_key)
+        address_matches = not entry.get("address") or entry.get("address") == bridge_address
+        confirmations_daa = max(0, current_daa - block_daa_score)
+        confirmed = confirmations_daa >= self.config.min_confirmations_daa
+        mature = (
+            True
+            if not is_coinbase
+            else current_daa >= block_daa_score + self.config.coinbase_maturity_daa
+        )
+        enough_amount = amount_sompi >= self.config.min_amount_sompi
+        eligible = script_matches and address_matches and mature and confirmed and enough_amount
+        selected_at = _utc_now()
+        return {
+            "utxo_id": f"{transaction_id}:{output_index}",
+            "bridge_utxo": {
+                "transaction_id": transaction_id,
+                "output_index": output_index,
+                "amount_sompi": amount_sompi,
+                "script_public_key": script,
+            },
+            "live_api_utxo": entry,
+            "selection": {
+                "source": "kaspa-node-rpc",
+                "selectedAt": selected_at,
+                "virtualDaaScore": current_daa,
+                "coinbaseMaturityDaa": self.config.coinbase_maturity_daa,
+                "minConfirmationsDaa": self.config.min_confirmations_daa,
+                "minAmountSompi": self.config.min_amount_sompi,
+                "isCoinbase": is_coinbase,
+                "blockDaaScore": block_daa_score,
+                "confirmationsDaa": confirmations_daa,
+                "mature": mature,
+                "confirmed": confirmed,
+                "amountAccepted": enough_amount,
+                "scriptMatches": script_matches,
+                "addressMatches": address_matches,
+                "eligible": eligible,
+                "requiredScriptPublicKey": _normalize_hex(bridge_script_public_key),
+            },
+            "address": bridge_address,
+            "derivation_path": derivation_path,
+        }
+
+
 class KaspaExitProposalBuilder:
     def __init__(
         self,
@@ -301,6 +792,7 @@ class KaspaExitProposalBuilder:
         evidence = self._build_evidence(
             bundle=bundle,
             exit_requests=exit_requests,
+            build_input=build_input,
         )
         evidence_hash = canonical_json_hash(evidence)
         artifact_hashes = dict(bundle.manifest.get("artifactChecksums") or {})
@@ -484,6 +976,17 @@ class KaspaExitProposalBuilder:
                 "ecdsa": self.federation.ecdsa,
             },
         }
+        funding_evidence = [
+            utxo
+            for utxo in locking_utxos
+            if isinstance(utxo, dict)
+            and ("selection" in utxo or "live_api_utxo" in utxo or "bridge_utxo" in utxo)
+        ]
+        if funding_evidence:
+            build_input["kaspa_funding_evidence"] = {
+                "selectedUtxos": funding_evidence,
+                "normalizedLockingUtxos": normalized_utxos,
+            }
         if change_sompi:
             build_input["change"] = {
                 "derivation_path": self.config.canonical_derivation_path,
@@ -492,6 +995,11 @@ class KaspaExitProposalBuilder:
                 "address": self.config.canonical_bridge_address,
             }
         return build_input
+
+    def required_input_sompi(self, *, bundle_dir: str | Path, fee_sompi: int) -> int:
+        bundle = load_keb_bundle(bundle_dir)
+        exit_requests = self._validate_and_extract_exits(bundle)
+        return sum(request["amount_sompi"] for request in exit_requests) + fee_sompi
 
     def _validate_federation(self) -> None:
         if self.federation.network != self.config.network:
@@ -646,7 +1154,19 @@ class KaspaExitProposalBuilder:
         *,
         bundle: "KebBundle",
         exit_requests: list[dict[str, Any]],
+        build_input: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        locking_utxos = []
+        total_input_sompi = 0
+        funding_evidence = {}
+        if build_input:
+            locking_utxos = list(build_input.get("locking_utxos") or [])
+            total_input_sompi = sum(
+                int(utxo.get("amount_sompi") or 0)
+                for utxo in locking_utxos
+                if isinstance(utxo, dict)
+            )
+            funding_evidence = dict(build_input.get("kaspa_funding_evidence") or {})
         return {
             "schemaVersion": 1,
             "kind": "kaspa-exit-proposal-evidence",
@@ -692,6 +1212,42 @@ class KaspaExitProposalBuilder:
                 }
                 for item in exit_requests
             ],
+            "kaspaFunding": {
+                "source": "kaspa-node-rpc",
+                "selectedUtxos": funding_evidence.get("selectedUtxos", locking_utxos),
+                "normalizedLockingUtxos": locking_utxos,
+                "selectedInputTotalSompi": total_input_sompi,
+                "feeSompi": int(build_input.get("fee_sompi", 0)) if build_input else 0,
+                "change": build_input.get("change") if build_input else None,
+                "selectionPolicy": {
+                    "description": (
+                        "Select live custody UTXOs from configured Kaspa RPC, filter by "
+                        "canonical bridge script/address and maturity, prefer non-coinbase "
+                        "then older DAA score then larger amount, stop once exits plus fee "
+                        "are covered."
+                    ),
+                    "coinbaseMaturityDaa": (
+                        self.config.kaspa_utxos.coinbase_maturity_daa
+                        if self.config.kaspa_utxos
+                        else None
+                    ),
+                    "minConfirmationsDaa": (
+                        self.config.kaspa_utxos.min_confirmations_daa
+                        if self.config.kaspa_utxos
+                        else None
+                    ),
+                    "minAmountSompi": (
+                        self.config.kaspa_utxos.min_amount_sompi
+                        if self.config.kaspa_utxos
+                        else None
+                    ),
+                    "maxInputs": (
+                        self.config.kaspa_utxos.max_inputs
+                        if self.config.kaspa_utxos
+                        else None
+                    ),
+                },
+            },
             "bundle": {
                 "manifest": bundle.manifest,
                 "exitData": bundle.exit_data,
@@ -808,6 +1364,14 @@ def normalize_locking_utxo(
     utxo.setdefault("amount_kas", _sompi_to_kas(utxo["amount_sompi"]))
     utxo.setdefault("address", bridge_address)
     return utxo
+
+
+def strip_builder_only_build_input_fields(build_input: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in build_input.items()
+        if key not in {"kaspa_funding_evidence"}
+    }
 
 
 def normalize_pst_xpub_versions(
@@ -996,3 +1560,7 @@ def _sompi_to_kas(value: int) -> str:
     whole = value // 100_000_000
     fraction = value % 100_000_000
     return f"{whole}.{fraction:08d}"
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
