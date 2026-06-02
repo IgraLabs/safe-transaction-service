@@ -77,6 +77,28 @@ The production flow has three independent roles:
   evidence, re-verify against their own Igra and Kaspa RPC endpoints, sign
   locally, and submit signed PST bundles back to Safe Transaction Service.
 
+Runtime ownership should stay separated:
+
+```text
+proposal-builder  -> per federation/config; no private keys; creates proposals
+safe-service      -> coordination/storage API; no trust decision for signers
+signer wallet     -> signer-controlled verifier and signer; owns private keys
+```
+
+The Proposal Builder should run per federation, or as one daemon with strictly
+separated per-federation configuration and state. Each federation config is an
+allowlist: federation id, Igra chain id, bridge contract addresses, Mailbox,
+MerkleTreeHook, Kaspa custody address, kpub set, threshold, ECDSA flag,
+derivation path, txid prefix, and the last processed exit checkpoint. The
+builder must not dynamically discover which federation an exit belongs to.
+
+Safe Transaction Service is not a signing authority. It stores the proposal and
+evidence, tracks quorum, accepts signer submissions, merges PST state, and
+records broadcasts. It must be safe for signers to treat all data from
+safe-service as untrusted input. A signer should sign only after its own wallet
+verifier has reproduced the unsigned PST from public chain data and exact
+federation config.
+
 The execution step is permissionless at the service level after quorum:
 whichever signer/operator is assigned can call the broadcast endpoint once the
 proposal is `READY`. The service re-validates the merged signed PST immediately
@@ -98,6 +120,52 @@ Kaspa bridge address: kaspa:ppvnxxzm0rr37zpnwux2f2ntvfpr4uqdpm7zsvsztg3en92r7gs0
 
 Any chain ID, contract address, mailbox, Merkle hook, bridge address, threshold,
 ECDSA flag, or kpub mismatch is a hard failure before proposal creation.
+
+## Signer Trust Boundary
+
+Signer wallets hold the responsibility for user funds. They must not trust the
+Proposal Builder, Safe Transaction Service, or another signer. Before adding a
+signature, signer-side tooling must:
+
+1. Fetch the proposal and `/api/v1/kaspa/exit-batches/{id}/evidence/`.
+2. Recompute the evidence hash using canonical JSON and compare it to the
+   proposal's `exit_evidence_hash`.
+3. Verify the federation config against the local signer wallet: network, kpubs,
+   threshold, ECDSA flag, custody address, script public key, and derivation
+   path.
+4. Verify the Igra evidence against the signer's own Igra RPC: chain id,
+   contract code, finalized window, transaction receipts, logs, successful exit
+   events, and Merkle checkpoint continuity.
+5. Verify the Kaspa funding UTXOs against the signer's own Kaspa RPC: outpoint,
+   amount, script public key, live unspent state, and coinbase maturity.
+6. Rebuild the unsigned exit PST locally from verified exits, verified UTXOs,
+   kpubs, threshold, change policy, fee, and txid-prefix payload nonce.
+7. Compare the rebuilt PST bytes, unsigned txid, payload, outputs, fee, mass, and
+   proposal hash to safe-service.
+8. Sign only if every comparison is exact.
+
+The expected wallet UX is a fail-closed command such as:
+
+```bash
+kaspawallet verify-exit-proposal \
+  --safe-url https://safe.example \
+  --proposal-hash <hash> \
+  --keys-file signer.keys.json \
+  --igra-rpc-url https://signer-owned-igra-rpc \
+  --kaspa-rpc-url grpc://signer-owned-kaspa-rpc
+
+kaspawallet sign-exit-proposal \
+  --safe-url https://safe.example \
+  --proposal-hash <hash> \
+  --keys-file signer.keys.json \
+  --igra-rpc-url https://signer-owned-igra-rpc \
+  --kaspa-rpc-url grpc://signer-owned-kaspa-rpc
+```
+
+The second command must run the same verifier internally before decrypting keys
+or producing a signed PST bundle. Raw `kaspawallet sign --transaction ...`
+remains useful for generic multisig, but bridge signers should use the
+exit-aware signing command for custody exits.
 
 ## Window Timing
 
