@@ -24,56 +24,80 @@ The federation controls a Kaspa custody wallet. Users request exits on Igra L2.
 For each finalized group of exits, a proposal is created to pay users on Kaspa.
 Federation members verify and sign that proposal.
 
-```mermaid
-flowchart LR
-    Users["Users request exits<br/>on Igra L2"]
-    Contracts["Igra bridge contracts<br/>KasExitBridge, Mailbox,<br/>MerkleTreeHook"]
-    Builder["Proposal Builder<br/>Igra Labs service<br/>NO private keys"]
-    Safe["Safe Transaction Service<br/>coordination and storage<br/>NO private keys"]
-    SignerA["Signer A wallet<br/>verifies locally<br/>owns key"]
-    SignerB["Signer B wallet<br/>verifies locally<br/>owns key"]
-    SignerC["Signer C wallet<br/>verifies locally<br/>owns key"]
-    Kaspa["Kaspa network<br/>final transaction"]
-    Recipients["Exit recipients<br/>receive KAS"]
-    Change["Custody change<br/>returns to federation wallet"]
-
-    Users --> Contracts
-    Contracts --> Builder
-    Builder --> Safe
-    Safe <--> SignerA
-    Safe <--> SignerB
-    Safe <--> SignerC
-    SignerA --> Safe
-    SignerB --> Safe
-    Safe --> Kaspa
-    Kaspa --> Recipients
-    Kaspa --> Change
+```text
+Users request exits on Igra L2
+        |
+        v
++-----------------------------------+
+| Igra bridge contracts             |
+| KasExitBridge, Mailbox, Hook      |
++-----------------------------------+
+        |
+        v
++-----------------------------------+
+| Proposal Builder                  |
+| verifies exits and builds         |
+| unsigned Kaspa proposal           |
+| NO private keys                   |
++-----------------------------------+
+        |
+        v
++-----------------------------------+
+| Safe Transaction Service          |
+| stores proposal, evidence,        |
+| signatures, quorum state          |
+| NO private keys                   |
++-----------------------------------+
+        |
+        v
++-----------------------------------+
+| Federation signers                |
+| each wallet verifies locally      |
+| each signer owns one key          |
++-----------------------------------+
+        |
+        v
++-----------------------------------+
+| Kaspa network                     |
+| final transaction is broadcast    |
++-----------------------------------+
+        |
+        +--> exit users receive KAS
+        |
+        +--> custody change returns to federation wallet
 ```
 
 The important security boundary is at the signer wallet:
 
-```mermaid
-flowchart TB
-    subgraph Untrusted["Treat as untrusted input"]
-        Builder["Proposal Builder output"]
-        Safe["Safe Transaction Service data"]
-        Other["Other signer submissions"]
-    end
+```text
+Treat these as untrusted input:
 
-    subgraph SignerSide["Signer-controlled environment"]
-        Wallet["kaspawallet verifier and signer"]
-        Keys["Local keys file<br/>private material stays here"]
-        IgraRPC["Signer Igra RPC"]
-        KaspaRPC["Signer Kaspa RPC"]
-    end
-
-    Builder --> Wallet
-    Safe --> Wallet
-    Other --> Wallet
-    Wallet --> IgraRPC
-    Wallet --> KaspaRPC
-    Keys --> Wallet
-    Wallet --> Decision["Sign only if<br/>all checks pass"]
+  +-------------------------+
+  | Proposal Builder output |
+  +-------------------------+
+  +-------------------------+
+  | Safe-service data       |
+  +-------------------------+
+  +-------------------------+
+  | Other signer data       |
+  +-------------------------+
+              |
+              v
+  +---------------------------------------------------------+
+  | Signer-controlled environment                           |
+  |                                                         |
+  |   +-------------------------+                           |
+  |   | kaspawallet verifier    |<--- local keys file       |
+  |   | and signer              |     private material here |
+  |   +-------------------------+                           |
+  |        |               |                                |
+  |        v               v                                |
+  |   Signer Igra RPC   Signer Kaspa RPC                    |
+  |                                                         |
+  +---------------------------------------------------------+
+              |
+              v
+       Sign only if all checks pass
 ```
 
 Safe Transaction Service coordinates the process. It does not decide whether a
@@ -81,12 +105,21 @@ proposal is safe for you to sign. Your wallet makes that decision locally.
 
 ## Who Does What
 
-| Role | What it does | What it must not do |
-| --- | --- | --- |
-| Proposal Builder | Watches finalized Igra exit windows, verifies bridge evidence, builds unsigned Kaspa proposals | Hold signer private keys |
-| Safe Transaction Service | Stores federations, proposals, evidence, signatures, quorum state, and broadcast results | Act as a trust oracle for signers |
-| Federation signer | Verifies proposals locally and signs only exact, reproducible transactions | Trust a proposal without local verification |
-| Broadcaster | Broadcasts the final signed Kaspa transaction after quorum | Change the transaction after signatures |
+- Proposal Builder:
+  Watches finalized Igra exit windows, verifies bridge evidence, and builds
+  unsigned Kaspa proposals. It must not hold signer private keys.
+
+- Safe Transaction Service:
+  Stores federations, proposals, evidence, signatures, quorum state, and
+  broadcast results. It coordinates signing, but it is not a trust oracle.
+
+- Federation signer:
+  Verifies proposals locally and signs only exact, reproducible transactions.
+  The signer must not trust a proposal without local verification.
+
+- Broadcaster:
+  Broadcasts the final signed Kaspa transaction after quorum. It cannot change
+  the transaction after signatures are collected.
 
 ## Important Words
 
@@ -130,20 +163,22 @@ Private keys and mnemonics must stay local. Only public kpubs should be shared.
 
 Safe Transaction Service needs one federation record for each Kaspa signer set.
 
-```mermaid
-flowchart LR
-    Xpubs["Federation kpubs"]
-    Threshold["Threshold<br/>example: 2-of-3"]
-    Network["Kaspa network"]
-    Mode["Signing mode"]
-    Federation["Federation record<br/>/api/v1/kaspa/federations/{id}/"]
-    Proposals["Many exit proposals<br/>reuse this same id"]
+```text
+One federation record is created from:
 
-    Xpubs --> Federation
-    Threshold --> Federation
-    Network --> Federation
-    Mode --> Federation
-    Federation --> Proposals
+  federation kpubs
+  threshold, for example 2-of-3
+  Kaspa network
+  signing mode
+          |
+          v
+  +---------------------------------------------+
+  | Federation record                           |
+  | /api/v1/kaspa/federations/{federation_id}/  |
+  +---------------------------------------------+
+          |
+          v
+  Many exit proposals reuse this same federation id
 ```
 
 You do not register a new federation for every exit proposal. Reuse the same
@@ -176,32 +211,161 @@ POST /api/v1/kaspa/transactions/{proposal_hash}/broadcast/
 Most signers should use the wallet commands rather than calling these APIs
 manually.
 
+## Proposal Builder Config Example
+
+Igra Labs runs one Proposal Builder config per federation/bridge setup. This
+config is an allowlist. It says exactly which Igra chain, contracts, Kaspa
+network, and custody address the builder is allowed to use.
+
+The config does not contain private keys.
+
+```text
+Proposal Builder config
+        |
+        +--> which Igra chain?
+        |
+        +--> which bridge contracts?
+        |
+        +--> which Kaspa network?
+        |
+        +--> which custody address?
+        |
+        +--> how many confirmations/finality checks?
+```
+
+Production-shaped example:
+
+```json
+{
+  "network": "mainnet",
+  "l2ChainId": 38833,
+  "igraRpcUrl": "https://rpc.igralabs.com:8545",
+  "kaspaTxIdPrefix": "97b1",
+  "l2ConfirmationBlocks": 12,
+  "proposedBy": "igra-exit-proposal-builder",
+  "contracts": {
+    "kasExitBridge": "0x4bb88C213d3eD9dc4bae694f1bc1bF745903b2d0",
+    "mailbox": "0x3a867fCfFeC2B790970eeBDC9023E75B0a172aa7",
+    "merkleTreeHook": "0x75719C858e0c73e07128F95B2C466d142490e933"
+  },
+  "bridge": {
+    "address": "kaspa:ppvnxxzm0rr37zpnwux2f2ntvfpr4uqdpm7zsvsztg3en92r7gs0wkmr72q9n",
+    "scriptPublicKey": "aa205933185b78c71f0833770ca4aa6b62423af00d0efc2832025a23999543f220f787",
+    "derivationPath": "m/0/0/1"
+  }
+}
+```
+
+Field meaning:
+
+| Field | What it means |
+| --- | --- |
+| `network` | Kaspa network. A mainnet federation must see `mainnet`. |
+| `l2ChainId` | Igra L2 chain id. Signers verify this through their own Igra RPC. |
+| `igraRpcUrl` | RPC used by the builder. Signers may use a different RPC locally. |
+| `kaspaTxIdPrefix` | Required txid prefix for Igra protocol transactions. |
+| `l2ConfirmationBlocks` | Confirmation/finality margin before the builder proposes. |
+| `contracts` | Exact Igra bridge contracts the builder is allowed to observe. |
+| `bridge.address` | Canonical Kaspa custody address for this federation. |
+| `bridge.scriptPublicKey` | Expected Kaspa locking script for custody UTXOs. |
+| `bridge.derivationPath` | Wallet path used to derive the custody address. |
+
+The signer set itself comes from the Safe Transaction Service federation record:
+kpubs, threshold, Kaspa network, and signing mode. The proposal-builder config
+and the federation record must agree on the custody wallet. If they do not, the
+builder should fail before proposal creation and signer wallets should fail
+before signing.
+
+Some deployments may also include `foundryExtendedPublicKeys` in the config.
+Those are public kpubs used by the Foundry `build-exit` command. They are not
+private keys.
+
+## Automatic Or Manual?
+
+In production, Proposal Builder should run as an operator service. Federation
+members normally do not run it by hand.
+
+```text
+Normal production mode
+
+Proposal Builder service
+        |
+        +--> watches one configured federation/bridge
+        |
+        +--> waits until the next Igra exit window is finalized
+        |
+        +--> verifies the window
+        |
+        +--> creates one proposal in Safe Transaction Service
+        |
+        +--> remembers progress and waits for the next window
+```
+
+Manual runs are still useful, but they are operator actions:
+
+- devnet testing
+- staging rehearsals
+- backfilling an old finalized window
+- retrying after infrastructure failure
+- investigating a failed automatic run
+
+Manual mode must use the same config, same federation id, and same validation
+rules as the service mode. It must not bypass evidence checks.
+
+Signers should think about the system like this:
+
+```text
+Proposal Builder creates proposals.
+Signer wallets verify and sign proposals.
+
+These are different jobs.
+```
+
+The Proposal Builder still cannot move funds by itself. It has no private keys.
+It can only create an unsigned proposal and evidence package.
+
 ## Per-Proposal Flow
 
 This is what happens for one exit proposal.
 
-```mermaid
-sequenceDiagram
-    participant Igra as Igra L2
-    participant Builder as Proposal Builder
-    participant Safe as Safe Transaction Service
-    participant Signer as Signer Wallet
-    participant KaspaRPC as Signer Kaspa RPC
-    participant IgraRPC as Signer Igra RPC
-    participant Kaspa as Kaspa Network
-
-    Igra->>Builder: Finalized exit window exists
-    Builder->>Builder: Verify exits and build evidence
-    Builder->>Builder: Build unsigned Kaspa PST
-    Builder->>Safe: Submit proposal plus evidence
-    Signer->>Safe: Fetch proposal and evidence
-    Signer->>IgraRPC: Verify chain, contracts, logs, finality
-    Signer->>KaspaRPC: Verify custody UTXOs
-    Signer->>Signer: Rebuild unsigned PST locally
-    Signer->>Signer: Compare rebuilt bytes with proposal
-    Signer->>Safe: Submit signature if exact match
-    Safe->>Safe: Merge signatures and track quorum
-    Safe->>Kaspa: Broadcast after quorum
+```text
+1. Igra L2
+   Finalized exit window exists
+          |
+          v
+2. Proposal Builder
+   - verifies exits
+   - builds evidence
+   - builds unsigned Kaspa PST
+          |
+          v
+3. Safe Transaction Service
+   Stores proposal and evidence
+          |
+          v
+4. Signer wallet
+   Fetches proposal and evidence
+          |
+          +--> checks signer Igra RPC:
+          |    chain, contracts, logs, finality
+          |
+          +--> checks signer Kaspa RPC:
+          |    custody UTXOs
+          |
+          +--> rebuilds unsigned PST locally
+          |
+          +--> compares rebuilt bytes with proposal
+          |
+          v
+5. If exact match, signer submits signature
+          |
+          v
+6. Safe Transaction Service
+   Merges signatures and tracks quorum
+          |
+          v
+7. Kaspa network
+   Final transaction is broadcast after quorum
 ```
 
 A signer normally performs only these actions:
@@ -214,33 +378,134 @@ A signer normally performs only these actions:
 5. Submit the signed bundle to Safe Transaction Service.
 6. Watch quorum and broadcast status.
 
+## Duplicates And Edge Cases
+
+The system should be safe if two operators click the same button, if a signer
+submits twice, or if a proposal becomes stale. Signers should understand what
+happens in these cases.
+
+### Two Operators Run Proposal Builder For The Same Window
+
+Expected result:
+
+- Safe Transaction Service accepts only one exit batch for the same federation,
+  Igra chain id, and block window.
+- The first valid submission wins.
+- The second submission is rejected as already existing, or resolves to the
+  already-created proposal.
+
+Signer action:
+
+- Sign only the proposal visible for the expected federation and window.
+- Do not sign a second proposal that claims to pay the same exits unless the
+  federation has explicitly cancelled/replaced the first one and explained why.
+
+### Two Different Proposals Claim The Same Exits
+
+This should not happen in normal operation.
+
+Possible causes:
+
+- wrong federation id
+- wrong builder config
+- manual operator error
+- attempted malicious proposal
+
+Signer action:
+
+- Stop signing.
+- Compare federation id, custody address, Igra window, evidence hash, fee, and
+  outputs.
+- Escalate to federation operators.
+- Sign only after there is one agreed proposal for the window.
+
+### Same Signer Submits The Same Signature Twice
+
+Expected result:
+
+- Safe Transaction Service should not count the same signature twice.
+- A duplicate submission should be rejected or treated as no new signature.
+
+Signer action:
+
+- No emergency action is needed.
+- Check the proposal page/API to confirm your signature was recorded once.
+
+### Quorum Is Reached While A Signer Is Still Reviewing
+
+Expected result:
+
+- Once enough signatures are collected, the proposal becomes ready for broadcast.
+- A later signer may not need to sign.
+
+Signer action:
+
+- If the transaction is already broadcast, verify the broadcast txid and outputs.
+- If it is ready but not broadcast, the signer may still review, but the
+  federation should coordinate who broadcasts.
+
+### Selected Kaspa UTXO Is Spent Before Broadcast
+
+Expected result:
+
+- The transaction may fail to broadcast because an input is no longer available.
+- A new proposal may be required with different live custody UTXOs.
+
+Signer action:
+
+- Do not reuse old signatures for a new proposal.
+- Verify and sign the replacement proposal from scratch.
+
+### Fee Looks Wrong
+
+Expected result:
+
+- The signer verifier checks the exact fee math.
+- A mathematically valid fee can still be operationally unacceptable if it is
+  much higher than expected.
+
+Signer action:
+
+- Reject or pause if the fee is surprising.
+- Ask operators to explain the fee policy before signing.
+
+### Broadcast Fails
+
+Expected result:
+
+- Safe Transaction Service records the broadcast error.
+- Operators investigate whether the issue is RPC availability, stale UTXOs,
+  invalid signatures, or network state.
+
+Signer action:
+
+- Do not sign a replacement blindly.
+- Treat any replacement as a new proposal and run the full verifier again.
+
 ## What The Proposal Contains
 
 A proposal is not just "please sign this transaction." It includes or points to
 evidence so each signer can verify the transaction independently.
 
-```mermaid
-flowchart TB
-    Proposal["Kaspa proposal"]
-    PST["Unsigned Kaspa PST<br/>inputs, outputs, fee, payload"]
-    EvidenceHash["Evidence hash"]
-    ExitBatch["Exit batch id"]
-    Evidence["Evidence JSON"]
-    IgraData["Igra exits<br/>logs, receipts, message ids"]
-    Contracts["Contract checks"]
-    Merkle["Merkle tree replay<br/>checkpoint continuity"]
-    UTXOs["Kaspa custody UTXOs"]
-    Manifest["Unsigned tx manifest"]
-
-    Proposal --> PST
-    Proposal --> EvidenceHash
-    Proposal --> ExitBatch
-    ExitBatch --> Evidence
-    Evidence --> IgraData
-    Evidence --> Contracts
-    Evidence --> Merkle
-    Evidence --> UTXOs
-    Evidence --> Manifest
+```text
++-------------------------------------------------------------+
+| Kaspa proposal                                              |
+|                                                             |
+|  - unsigned Kaspa PST: inputs, outputs, fee, payload        |
+|  - evidence hash                                            |
+|  - exit batch id                                            |
++-------------------------------------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+| Evidence JSON                                                |
+|                                                             |
+|  Igra exits: logs, receipts, message ids, amounts           |
+|  Contract checks: KasExitBridge, Mailbox, MerkleTreeHook    |
+|  Merkle replay and checkpoint continuity                    |
+|  Kaspa custody UTXOs                                        |
+|  Unsigned transaction manifest                              |
++-------------------------------------------------------------+
 ```
 
 Evidence includes:
@@ -327,16 +592,16 @@ For an exit proposal, the Kaspa fee is paid by the federation custody wallet.
 It is deducted from the selected custody UTXOs when the final transaction is
 broadcast.
 
-```mermaid
-flowchart LR
-    Inputs["Custody UTXOs<br/>selected inputs"]
-    Exits["User exit outputs"]
-    Change["Change output<br/>back to custody"]
-    Fee["Kaspa fee<br/>paid to miners"]
-
-    Inputs --> Exits
-    Inputs --> Change
-    Inputs --> Fee
+```text
+Selected custody UTXOs
+        |
+        +------------------> user exit outputs
+        |
+        +------------------> custody change output
+        |                    back to federation wallet
+        |
+        +------------------> Kaspa transaction fee
+                             paid to miners
 ```
 
 Mechanically:
@@ -387,20 +652,36 @@ Igra Labs may run the Proposal Builder and Safe Transaction Service, but that
 does not mean signers must trust them. A compromised service can ask for a bad
 signature, but a correctly verifying signer wallet should refuse to sign it.
 
-```mermaid
-flowchart LR
-    BadService["Bad or compromised service"]
-    BadProposal["Bad proposal"]
-    Verifier["Signer verifier"]
-    Stop["No signature"]
-    GoodProposal["Correct proposal"]
-    Signature["Signer adds signature"]
+```text
+Bad or compromised service
+        |
+        v
+Bad proposal
+        |
+        v
++------------------+
+| Signer verifier  |
++------------------+
+        |
+        v
+Verification fails
+        |
+        v
+No signature
 
-    BadService --> BadProposal
-    BadProposal --> Verifier
-    Verifier --> Stop
-    GoodProposal --> Verifier
-    Verifier --> Signature
+
+Correct proposal
+        |
+        v
++------------------+
+| Signer verifier  |
++------------------+
+        |
+        v
+Verification passes
+        |
+        v
+Signer adds signature
 ```
 
 The signer trusts:
