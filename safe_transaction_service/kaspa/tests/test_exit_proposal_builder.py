@@ -7,6 +7,7 @@ from unittest import mock
 from django.test import TestCase
 
 from safe_transaction_service.kaspa.models import (
+    KaspaExitBatch,
     KaspaExitBatchStatus,
     KaspaExitRequest,
     KaspaFederation,
@@ -88,6 +89,79 @@ class TestKaspaExitProposalBuilder(TestCase):
         self.assertEqual(
             result.exit_batch.evidence["bundle"]["manifest"]["context"]["chainId"],
             38833,
+        )
+        self.assertNotIn("kaspaTransaction", result.exit_batch.evidence)
+        self.assertEqual(
+            result.proposal.origin["candidate"]["unsignedManifest"]["schema"],
+            "igra.exit.unsigned.v1",
+        )
+
+    @mock.patch("safe_transaction_service.kaspa.serializers.get_pst_client")
+    def test_build_from_same_bundle_reuses_batch_for_candidate_proposals(
+        self, get_pst_client_mock
+    ):
+        pst_client = get_pst_client_mock.return_value
+        pst_client.inspect.side_effect = [
+            {
+                "proposalHash": "a" * 64,
+                "xpubFingerprint": self.federation.xpub_fingerprint,
+                "txIds": ["97b1tx-a"],
+                "inputOutpoints": [{"txId": "prev", "index": 0, "amountSompi": 300}],
+                "outputs": [{"address": "kaspa:recipient", "amountSompi": 200}],
+                "feeSompi": 100,
+                "mass": 1200,
+                "signaturesRequired": 2,
+                "signaturesCollected": 0,
+                "ready": False,
+            },
+            {
+                "proposalHash": "b" * 64,
+                "xpubFingerprint": self.federation.xpub_fingerprint,
+                "txIds": ["97b1tx-b"],
+                "inputOutpoints": [{"txId": "prev2", "index": 0, "amountSompi": 300}],
+                "outputs": [{"address": "kaspa:recipient", "amountSompi": 200}],
+                "feeSompi": 100,
+                "mass": 1200,
+                "signaturesRequired": 2,
+                "signaturesCollected": 0,
+                "ready": False,
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle_dir = self.write_bundle(Path(tmp))
+            builder = KaspaExitProposalBuilder(
+                config=self.config, federation=self.federation
+            )
+            result_a = builder.build_from_artifacts(
+                bundle_dir=bundle_dir,
+                unsigned_manifest=self.unsigned_manifest(),
+                unsigned_bundle_hex="aa",
+                unsigned_verify_report={
+                    "ok": True,
+                    "signed_inputs": 0,
+                    "fully_signed": False,
+                },
+                build_input={"locking_utxos": [{"outpoint": "a"}]},
+            )
+            result_b = builder.build_from_artifacts(
+                bundle_dir=bundle_dir,
+                unsigned_manifest=self.unsigned_manifest(),
+                unsigned_bundle_hex="bb",
+                unsigned_verify_report={
+                    "ok": True,
+                    "signed_inputs": 0,
+                    "fully_signed": False,
+                },
+                build_input={"locking_utxos": [{"outpoint": "b"}]},
+            )
+
+        self.assertEqual(KaspaExitBatch.objects.count(), 1)
+        self.assertEqual(KaspaTxProposal.objects.count(), 2)
+        self.assertEqual(result_a.exit_batch.pk, result_b.exit_batch.pk)
+        self.assertEqual(
+            set(result_a.exit_batch.tx_proposals.values_list("proposal_hash", flat=True)),
+            {"a" * 64, "b" * 64},
         )
 
     def test_rejects_wrong_contract(self):

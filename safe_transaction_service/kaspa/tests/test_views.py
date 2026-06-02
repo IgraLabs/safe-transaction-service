@@ -280,6 +280,44 @@ class TestKaspaViews(APITestCase):
         self.assertEqual(response.json()["exitBatch"], str(exit_batch.pk))
         self.assertEqual(response.json()["exitEvidenceHash"], "e" * 64)
 
+        pst_client.inspect.return_value = {
+            "proposalHash": "d" * 64,
+            "xpubFingerprint": federation.xpub_fingerprint,
+            "txIds": ["tx-unsigned-2"],
+            "inputOutpoints": [{"txId": "prev2", "index": 0, "amountSompi": 400}],
+            "outputs": [{"address": "kaspa:recipient", "amountSompi": 200}],
+            "feeSompi": 100,
+            "mass": 1200,
+            "signaturesRequired": 2,
+            "signaturesCollected": 0,
+            "ready": False,
+        }
+        response = self.client.post(
+            reverse("v1:kaspa:federation-transactions", args=(federation.pk,)),
+            data={
+                "unsignedBundleHex": "bb",
+                "exitBatch": str(exit_batch.pk),
+                "proposedBy": "another-exit-observer",
+                "origin": {"kind": "igra-l2-exit"},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(KaspaTxProposal.objects.count(), 2)
+        exit_batch.refresh_from_db()
+        self.assertEqual(exit_batch.tx_proposals.count(), 2)
+
+        response = self.client.get(
+            reverse("v1:kaspa:exit-batch", args=(exit_batch.pk,)),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            set(response.json()["proposalHashes"]),
+            {"c" * 64, "d" * 64},
+        )
+
         response = self.client.get(
             reverse("v1:kaspa:exit-batch-evidence", args=(exit_batch.pk,)),
         )

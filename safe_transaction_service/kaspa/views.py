@@ -139,7 +139,8 @@ class KaspaTxProposalDetailView(RetrieveAPIView):
 
 class KaspaExitBatchListView(ListAPIView):
     queryset = (
-        KaspaExitBatch.objects.select_related("federation", "tx_proposal")
+        KaspaExitBatch.objects.select_related("federation")
+        .prefetch_related("tx_proposals")
         .order_by("-to_block", "-created")
     )
     serializer_class = serializers.KaspaExitBatchSummarySerializer
@@ -154,8 +155,8 @@ class KaspaExitBatchListView(ListAPIView):
 
 class KaspaExitBatchDetailView(RetrieveAPIView):
     queryset = (
-        KaspaExitBatch.objects.select_related("federation", "tx_proposal")
-        .prefetch_related("exit_requests")
+        KaspaExitBatch.objects.select_related("federation")
+        .prefetch_related("exit_requests", "tx_proposals")
         .order_by("-to_block", "-created")
     )
     serializer_class = serializers.KaspaExitBatchResponseSerializer

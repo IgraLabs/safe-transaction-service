@@ -178,7 +178,7 @@ Proposal Builder service
         |
         +--> builds unsigned Kaspa PST
         |
-        +--> submits one proposal to Safe Transaction Service
+        +--> submits a candidate proposal to Safe Transaction Service
         |
         +--> records progress and waits for the next window
 ```
@@ -307,15 +307,18 @@ Important constraints:
 Expected duplicate behavior:
 
 - Two builders submit the same finalized window:
-  one succeeds, the other is rejected as already existing.
+  they reuse the same exit batch when the KEB evidence is identical.
 - Two identical proposals are submitted:
   one proposal hash wins; duplicate creation fails.
+- Two different proposals for the same exit batch are accepted as separate
+  candidates with different proposal hashes.
 - A signer submits the same signature twice:
   the duplicate should not add quorum.
 
-Operators must still investigate conflicting proposals that claim the same exits
-but differ in custody address, UTXOs, fee, outputs, or evidence hash. That is an
-operational incident, not a normal duplicate.
+This mirrors the upstream Safe Transaction Service model: transaction identity is
+the transaction/proposal hash, not the Safe nonce or Igra exit window. A noisy or
+malicious candidate does not lock the window. Signers decide what matters by
+verifying and signing one candidate.
 
 ## CPU Impact
 
@@ -673,22 +676,24 @@ Before enabling Kaspa endpoints:
 
 For each production proposal window:
 
-1. Proposal Builder creates one exit batch and proposal.
-2. Operators verify proposal status is `pending`.
-3. Signers verify locally and submit signatures.
-4. Operators watch quorum.
-5. Broadcast after status becomes `ready`.
-6. Verify broadcast tx ids.
-7. Archive evidence hash, proposal hash, and broadcast tx ids.
+1. Proposal Builder creates or reuses one exit batch.
+2. Proposal Builder submits one or more candidate proposals for that batch.
+3. Operators/signers choose the intended candidate by `proposal_hash`.
+4. Signers verify locally and submit signatures only for the selected candidate.
+5. Operators watch quorum.
+6. Broadcast after the selected proposal status becomes `ready`.
+7. Verify broadcast tx ids.
+8. Archive evidence hash, proposal hash, and broadcast tx ids.
 
 If something goes wrong:
 
 - Do not delete records manually as the first response.
 - Mark/cancel through application paths when available.
 - Preserve evidence and logs.
-- If a replacement proposal is needed, signers must verify and sign from
-  scratch.
-- Do not reuse signatures from a stale or failed proposal.
+- If another candidate is needed, submit it as a new proposal hash linked to the
+  same exit batch when the evidence is unchanged.
+- Signers must verify every candidate from scratch.
+- Do not reuse signatures from a stale, failed, or different proposal.
 
 ## Key Metrics
 

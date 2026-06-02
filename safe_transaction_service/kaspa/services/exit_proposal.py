@@ -301,24 +301,76 @@ class KaspaExitProposalBuilder:
         evidence = self._build_evidence(
             bundle=bundle,
             exit_requests=exit_requests,
-            build_input=build_input,
-            unsigned_manifest=unsigned_manifest,
-            unsigned_verify_report=unsigned_verify_report,
-            wallet_hex_normalization=wallet_hex_normalization,
         )
         evidence_hash = canonical_json_hash(evidence)
         artifact_hashes = dict(bundle.manifest.get("artifactChecksums") or {})
-        artifact_hashes["unsignedManifestSha256"] = _sha256_json(unsigned_manifest)
-        artifact_hashes["unsignedBundleHexSha256"] = hashlib.sha256(
-            unsigned_bundle_hex.encode()
-        ).hexdigest()
+        proposal_artifact_hashes = {
+            "unsignedManifestSha256": _sha256_json(unsigned_manifest),
+            "unsignedBundleHexSha256": hashlib.sha256(
+                unsigned_bundle_hex.encode()
+            ).hexdigest(),
+        }
         if wallet_hex_normalization and wallet_hex_normalization.get("applied"):
-            artifact_hashes["preNormalizationUnsignedBundleHexSha256"] = (
+            proposal_artifact_hashes["preNormalizationUnsignedBundleHexSha256"] = (
                 wallet_hex_normalization["originalBundleHexSha256"]
             )
         if build_input:
-            artifact_hashes["buildInputSha256"] = _sha256_json(build_input)
+            proposal_artifact_hashes["buildInputSha256"] = _sha256_json(build_input)
 
+        exit_batch = self._get_or_create_exit_batch(
+            bundle=bundle,
+            exit_requests=exit_requests,
+            evidence=evidence,
+            evidence_hash=evidence_hash,
+            artifact_hashes=artifact_hashes,
+        )
+
+        proposal = None
+        if submit_proposal:
+            origin = {
+                "kind": "igra-l2-exit",
+                "builder": "safe-transaction-service",
+                "evidenceHash": evidence_hash,
+                "candidate": {
+                    "artifactHashes": proposal_artifact_hashes,
+                    "buildInput": build_input,
+                    "unsignedManifest": unsigned_manifest,
+                    "unsignedVerify": unsigned_verify_report,
+                    "walletHexNormalization": wallet_hex_normalization,
+                },
+            }
+            serializer = KaspaTxProposalCreateSerializer(
+                data={
+                    "unsigned_bundle_hex": unsigned_bundle_hex,
+                    "exit_batch": str(exit_batch.pk),
+                    "proposed_by": self.config.proposed_by,
+                    "origin": origin,
+                },
+                context={"federation": self.federation},
+            )
+            try:
+                serializer.is_valid(raise_exception=True)
+                proposal = serializer.save()
+            except ValidationError as exc:
+                raise KaspaExitProposalBuilderError(str(exc.detail)) from exc
+
+        return KaspaExitProposalBuildResult(
+            exit_batch=exit_batch,
+            proposal=proposal,
+            evidence_hash=evidence_hash,
+            unsigned_manifest=unsigned_manifest,
+            unsigned_bundle_hex=unsigned_bundle_hex,
+        )
+
+    def _get_or_create_exit_batch(
+        self,
+        *,
+        bundle: "KebBundle",
+        exit_requests: list[dict[str, Any]],
+        evidence: dict[str, Any],
+        evidence_hash: str,
+        artifact_hashes: dict[str, str],
+    ) -> KaspaExitBatch:
         try:
             with transaction.atomic():
                 exit_batch = KaspaExitBatch.objects.create(
@@ -351,41 +403,38 @@ class KaspaExitProposalBuilder:
                         for request in exit_requests
                     ]
                 )
-        except IntegrityError as exc:
-            raise KaspaExitProposalBuilderError(
-                "Kaspa exit batch already exists for this federation/window"
-            ) from exc
-
-        proposal = None
-        if submit_proposal:
-            serializer = KaspaTxProposalCreateSerializer(
-                data={
-                    "unsigned_bundle_hex": unsigned_bundle_hex,
-                    "exit_batch": str(exit_batch.pk),
-                    "proposed_by": self.config.proposed_by,
-                    "origin": {
-                        "kind": "igra-l2-exit",
-                        "builder": "safe-transaction-service",
-                        "evidenceHash": evidence_hash,
-                    },
-                },
-                context={"federation": self.federation},
+                return exit_batch
+        except IntegrityError:
+            exit_batch = KaspaExitBatch.objects.get(
+                federation=self.federation,
+                l2_chain_id=self.config.l2_chain_id,
+                from_block=bundle.from_block,
+                to_block=bundle.to_block,
             )
-            try:
-                serializer.is_valid(raise_exception=True)
-                proposal = serializer.save()
-            except ValidationError as exc:
-                exit_batch.status = KaspaExitBatchStatus.FAILED
-                exit_batch.save(update_fields=["status", "modified"])
-                raise KaspaExitProposalBuilderError(str(exc.detail)) from exc
+            self._validate_existing_exit_batch(exit_batch, evidence_hash)
+            return exit_batch
 
-        return KaspaExitProposalBuildResult(
-            exit_batch=exit_batch,
-            proposal=proposal,
-            evidence_hash=evidence_hash,
-            unsigned_manifest=unsigned_manifest,
-            unsigned_bundle_hex=unsigned_bundle_hex,
-        )
+    def _validate_existing_exit_batch(
+        self,
+        exit_batch: KaspaExitBatch,
+        evidence_hash: str,
+    ) -> None:
+        expected = {
+            "network": self.config.network,
+            "evidence_hash": evidence_hash,
+            "canonical_bridge_address": self.config.canonical_bridge_address,
+            "canonical_bridge_script_public_key": (
+                self.config.canonical_bridge_script_public_key
+            ),
+            "canonical_derivation_path": self.config.canonical_derivation_path,
+            "threshold": self.federation.threshold,
+            "xpub_fingerprint": self.federation.xpub_fingerprint,
+        }
+        for field, value in expected.items():
+            if getattr(exit_batch, field) != value:
+                raise KaspaExitProposalBuilderError(
+                    f"existing exit batch conflicts on {field}"
+                )
 
     def build_foundry_input(
         self,
@@ -597,10 +646,6 @@ class KaspaExitProposalBuilder:
         *,
         bundle: "KebBundle",
         exit_requests: list[dict[str, Any]],
-        build_input: dict[str, Any] | None,
-        unsigned_manifest: dict[str, Any],
-        unsigned_verify_report: dict[str, Any],
-        wallet_hex_normalization: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "schemaVersion": 1,
@@ -656,15 +701,9 @@ class KaspaExitProposalBuilder:
                 "contractPreverify": bundle.contract_preverify,
                 "rawJsonArtifacts": bundle.raw_json_artifacts,
             },
-            "kaspaTransaction": {
-                "buildInput": build_input,
-                "unsignedManifest": unsigned_manifest,
-                "unsignedVerify": unsigned_verify_report,
-                "walletHexNormalization": wallet_hex_normalization,
-            },
             "verificationCommands": [
                 "cast igra verify-bundle-integral --manifest <bundle>/manifest.json",
-                "cast igra verify-exit --manifest <unsigned.json> --hex <unsigned.hex>",
+                "cast igra verify-exit --manifest <proposal-origin> --hex <proposal>",
                 "kaspa-pst inspect",
             ],
         }

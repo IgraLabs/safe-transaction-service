@@ -218,12 +218,16 @@ class KaspaExitBatchSummarySerializer(serializers.Serializer):
     threshold = serializers.IntegerField()
     xpub_fingerprint = serializers.CharField()
     proposal_hash = serializers.SerializerMethodField()
+    proposal_hashes = serializers.SerializerMethodField()
 
     def get_proposal_hash(self, obj: KaspaExitBatch) -> str | None:
-        try:
-            return obj.tx_proposal.proposal_hash
-        except KaspaTxProposal.DoesNotExist:
+        proposal = obj.tx_proposals.order_by("-created").first()
+        if not proposal:
             return None
+        return proposal.proposal_hash
+
+    def get_proposal_hashes(self, obj: KaspaExitBatch) -> list[str]:
+        return list(obj.tx_proposals.values_list("proposal_hash", flat=True))
 
 
 class KaspaExitBatchResponseSerializer(serializers.Serializer):
@@ -249,13 +253,17 @@ class KaspaExitBatchResponseSerializer(serializers.Serializer):
     artifact_hashes = serializers.JSONField()
     evidence = serializers.JSONField()
     proposal_hash = serializers.SerializerMethodField()
+    proposal_hashes = serializers.SerializerMethodField()
     exit_requests = serializers.SerializerMethodField()
 
     def get_proposal_hash(self, obj: KaspaExitBatch) -> str | None:
-        try:
-            return obj.tx_proposal.proposal_hash
-        except KaspaTxProposal.DoesNotExist:
+        proposal = obj.tx_proposals.order_by("-created").first()
+        if not proposal:
             return None
+        return proposal.proposal_hash
+
+    def get_proposal_hashes(self, obj: KaspaExitBatch) -> list[str]:
+        return list(obj.tx_proposals.values_list("proposal_hash", flat=True))
 
     def get_exit_requests(self, obj: KaspaExitBatch) -> list[dict[str, Any]]:
         return KaspaExitRequestResponseSerializer(
@@ -335,7 +343,10 @@ class KaspaTxProposalCreateSerializer(serializers.Serializer):
                     "Exit batch does not belong to this federation"
                 ) from exc
 
-        if exit_batch.status != KaspaExitBatchStatus.VERIFIED:
+        if exit_batch.status not in (
+            KaspaExitBatchStatus.VERIFIED,
+            KaspaExitBatchStatus.PROPOSED,
+        ):
             raise ValidationError(
                 "Exit batch must be verified before proposal creation"
             )
@@ -347,8 +358,6 @@ class KaspaTxProposalCreateSerializer(serializers.Serializer):
             raise ValidationError(
                 "Exit batch xpub fingerprint does not match federation"
             )
-        if hasattr(exit_batch, "tx_proposal"):
-            raise ValidationError("Exit batch already has a transaction proposal")
 
         return exit_batch
 

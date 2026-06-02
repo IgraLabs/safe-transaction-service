@@ -181,10 +181,10 @@ class KaspaTxProposal(TimeStampedModel):
         on_delete=models.CASCADE,
         related_name="tx_proposals",
     )
-    exit_batch = models.OneToOneField(
+    exit_batch = models.ForeignKey(
         KaspaExitBatch,
         on_delete=models.PROTECT,
-        related_name="tx_proposal",
+        related_name="tx_proposals",
         null=True,
         blank=True,
     )

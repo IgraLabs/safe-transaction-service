@@ -201,7 +201,8 @@ The current Safe Transaction Service builder command is bundle-driven. It does
 not walk Kaspa mainnet blocks to discover exits. It reads
 `manifest.context.fromBlock` and `manifest.context.toBlock` from a closed KEB
 bundle, checks the selected Igra `toBlock` for readiness, validates the bundle
-and unsigned PST artifacts, and stores one `KaspaExitBatch` plus one proposal.
+and unsigned PST artifacts, and stores one reusable `KaspaExitBatch` plus a
+candidate proposal.
 
 ## Real Exit-35 Fixture
 
@@ -537,7 +538,7 @@ identified, audited, and re-verified by wallets.
    only.
 7. Inspect the PST through `kaspa-pst`.
 8. Store `KaspaExitBatch` and `KaspaExitRequest` rows with evidence.
-9. Create a `KaspaTxProposal` linked to the batch.
+9. Create a candidate `KaspaTxProposal` linked to the batch.
 10. Wallets fetch the proposal and evidence, re-run verification locally, sign,
     and submit signed PST bundles back to Safe service.
 
@@ -556,8 +557,13 @@ python manage.py build_kaspa_exit_proposal \
 The command validates the KEB bundle, checks Igra finality unless
 `--skip-finality-check` is passed, builds the unsigned PST through
 `cast igra build-exit`, verifies it through `cast igra verify-exit`, creates a
-`KaspaExitBatch`, records every successful exit as `KaspaExitRequest`, then
-submits the unsigned PST through the existing proposal serializer.
+`KaspaExitBatch` or reuses the existing one for the same verified window,
+records every successful exit as `KaspaExitRequest` on first creation, then
+submits the unsigned PST as a candidate through the existing proposal serializer.
+
+Multiple candidate proposals can point to the same exit batch. This matches the
+upstream Safe flow where several pending transaction candidates can share the
+same Safe nonce, and the signed transaction is the one owners actually approve.
 
 The successful staging `daa12` run used the live Igra receipt bundle and a live
 custody UTXO:

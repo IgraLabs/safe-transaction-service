@@ -343,7 +343,7 @@ Proposal Builder service
         |
         +--> verifies the window
         |
-        +--> creates one proposal in Safe Transaction Service
+        +--> creates a candidate proposal in Safe Transaction Service
         |
         +--> remembers progress and waits for the next window
 ```
@@ -422,13 +422,31 @@ This is what happens for one exit proposal.
 
 A signer normally performs only these actions:
 
-1. Receive or discover a `proposal_hash`.
-2. Run `verify-exit-proposal`.
-3. Review the high-level result: recipient count, total amount, fee, change
+1. Receive/discover proposals for the federation, or receive one direct
+   `proposal_hash`.
+2. Run `verify-exit-proposal` for each candidate the signer wants to inspect.
+3. Ignore proposals that fail local verification.
+4. Review the high-level result: recipient count, total amount, fee, change
    address, txid.
-4. Run `sign-exit-proposal` only if verification passes.
-5. Submit the signed bundle to Safe Transaction Service.
-6. Watch quorum and broadcast status.
+5. Run `sign-exit-proposal` only for the selected verified proposal.
+6. Submit the signed bundle to Safe Transaction Service.
+7. Watch quorum and broadcast status.
+
+Both signer UX styles are supported:
+
+```text
+Browse mode:
+  wallet fetches proposals for the federation
+  wallet verifies each candidate locally
+  wallet shows only candidates that pass verification
+  signer selects one candidate to sign
+
+Direct mode:
+  operator/signer provides proposal_hash
+  wallet fetches that proposal
+  wallet verifies it locally
+  signer signs only if verification passes
+```
 
 ## Duplicates And Edge Cases
 
@@ -442,34 +460,39 @@ Expected result:
 
 - Safe Transaction Service accepts only one exit batch for the same federation,
   Igra chain id, and block window.
-- The first valid submission wins.
-- The second submission is rejected as already existing, or resolves to the
-  already-created proposal.
+- Safe Transaction Service may accept many candidate proposals linked to that
+  same exit batch.
+- Identical proposal bytes resolve to the same `proposal_hash`.
+- Different unsigned PST candidates get different `proposal_hash` values.
+- No candidate locks the window for the others.
 
 Signer action:
 
-- Sign only the proposal visible for the expected federation and window.
-- Do not sign a second proposal that claims to pay the same exits unless the
-  federation has explicitly cancelled/replaced the first one and explained why.
+- Verify the candidate selected by the federation or operator.
+- Ignore any candidate that fails local verification.
+- Keep local anti-double-sign state for the exit evidence/message set.
 
 ### Two Different Proposals Claim The Same Exits
 
-This should not happen in normal operation.
+This can happen in an open service. It is not a service-level emergency by
+itself because proposals are only candidates.
 
 Possible causes:
 
-- wrong federation id
+- different UTXO selection
+- different fee policy
+- builder retry with different transaction candidate
 - wrong builder config
-- manual operator error
 - attempted malicious proposal
 
 Signer action:
 
-- Stop signing.
 - Compare federation id, custody address, Igra window, evidence hash, fee, and
   outputs.
-- Escalate to federation operators.
-- Sign only after there is one agreed proposal for the window.
+- Sign only one candidate for the same exit evidence/message set.
+- If several candidates pass verification, follow the federation's operational
+  selection policy.
+- If none pass verification, ignore them and ask operators for a new candidate.
 
 ### Same Signer Submits The Same Signature Twice
 
@@ -501,12 +524,12 @@ Signer action:
 Expected result:
 
 - The transaction may fail to broadcast because an input is no longer available.
-- A new proposal may be required with different live custody UTXOs.
+- Another candidate proposal may be required with different live custody UTXOs.
 
 Signer action:
 
-- Do not reuse old signatures for a new proposal.
-- Verify and sign the replacement proposal from scratch.
+- Do not reuse old signatures for another proposal.
+- Verify and sign the new candidate proposal from scratch.
 
 ### Fee Looks Wrong
 
@@ -531,8 +554,8 @@ Expected result:
 
 Signer action:
 
-- Do not sign a replacement blindly.
-- Treat any replacement as a new proposal and run the full verifier again.
+- Do not sign another candidate blindly.
+- Treat every candidate as a new proposal and run the full verifier again.
 
 ## What The Proposal Contains
 
@@ -555,8 +578,15 @@ evidence so each signer can verify the transaction independently.
 |  Igra exits: logs, receipts, message ids, amounts           |
 |  Contract checks: KasExitBridge, Mailbox, MerkleTreeHook    |
 |  Merkle replay and checkpoint continuity                    |
-|  Kaspa custody UTXOs                                        |
-|  Unsigned transaction manifest                              |
++-------------------------------------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+| Proposal candidate metadata                                  |
+|                                                             |
+|  Selected Kaspa custody UTXOs                                |
+|  Unsigned transaction manifest and verifier report           |
+|  Candidate-specific artifact hashes                          |
 +-------------------------------------------------------------+
 ```
 

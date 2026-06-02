@@ -53,6 +53,15 @@ attached to a verified `KaspaExitBatch`.
 6. Wallets sign only if the evidence and unsigned PST match.
 ```
 
+An exit batch is reusable evidence, not a lock. Multiple candidate proposals may
+point to the same exit batch. This mirrors upstream Safe behavior: the proposal
+hash identifies the candidate transaction, and signer quorum decides which
+candidate becomes executable.
+
+Signer wallets can either fetch proposals for their federation and locally show
+only candidates that pass verification, or fetch one direct `proposal_hash` from
+an operator and verify only that candidate.
+
 The service stores public kpubs, the canonical bridge address, verified event
 material, artifact hashes, and the unsigned transaction. It must not store Kaspa
 wallet private keys.
