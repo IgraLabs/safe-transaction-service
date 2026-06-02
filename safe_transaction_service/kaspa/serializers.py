@@ -129,6 +129,45 @@ class KaspaFederationSerializer(serializers.Serializer):
         return federation
 
 
+def get_or_create_federation_from_payload(payload: dict[str, Any]) -> KaspaFederation:
+    serializer = KaspaFederationSerializer(data=payload)
+    serializer.is_valid(raise_exception=True)
+    validated_data = dict(serializer.validated_data)
+    participants = validated_data.pop("participants", [])
+
+    lookup = {
+        "network": validated_data["network"],
+        "xpub_fingerprint": validated_data["xpub_fingerprint"],
+        "threshold": validated_data["threshold"],
+        "ecdsa": validated_data["ecdsa"],
+    }
+    existing = KaspaFederation.objects.filter(**lookup).first()
+    if existing:
+        return existing
+
+    participant_names = {
+        participant["xpub"].strip(): participant.get("name", "")
+        for participant in participants
+    }
+    try:
+        with transaction.atomic():
+            federation = KaspaFederation.objects.create(**validated_data)
+            participant_objects = [
+                KaspaFederationParticipant(
+                    federation=federation,
+                    root_xpub=xpub,
+                    cosigner_index=cosigner_index,
+                    name=participant_names.get(xpub, ""),
+                )
+                for cosigner_index, xpub in enumerate(federation.xpubs)
+            ]
+            KaspaFederationParticipant.objects.bulk_create(participant_objects)
+    except IntegrityError:
+        federation = KaspaFederation.objects.get(**lookup)
+
+    return federation
+
+
 class KaspaTxSignatureResponseSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     created = serializers.DateTimeField()
@@ -264,6 +303,7 @@ class KaspaTxProposalResponseSerializer(serializers.Serializer):
 
 
 class KaspaTxProposalCreateSerializer(serializers.Serializer):
+    federation = KaspaFederationSerializer(required=False, write_only=True)
     unsigned_bundle_hex = serializers.CharField()
     exit_batch = serializers.UUIDField(required=False, allow_null=True)
     proposed_by = serializers.CharField(max_length=255, allow_blank=True, default="")
@@ -276,13 +316,24 @@ class KaspaTxProposalCreateSerializer(serializers.Serializer):
         if value is None:
             return None
 
-        federation: KaspaFederation = self.context["federation"]
-        try:
-            exit_batch = KaspaExitBatch.objects.get(pk=value, federation=federation)
-        except KaspaExitBatch.DoesNotExist as exc:
-            raise ValidationError(
-                "Exit batch does not belong to this federation"
-            ) from exc
+        federation: KaspaFederation | None = self.context.get("federation")
+        if federation is None:
+            return value
+
+        return self._validate_exit_batch_for_federation(value, federation)
+
+    def _validate_exit_batch_for_federation(
+        self, value, federation: KaspaFederation
+    ) -> KaspaExitBatch:
+        if isinstance(value, KaspaExitBatch):
+            exit_batch = value
+        else:
+            try:
+                exit_batch = KaspaExitBatch.objects.get(pk=value, federation=federation)
+            except KaspaExitBatch.DoesNotExist as exc:
+                raise ValidationError(
+                    "Exit batch does not belong to this federation"
+                ) from exc
 
         if exit_batch.status != KaspaExitBatchStatus.VERIFIED:
             raise ValidationError(
@@ -303,7 +354,22 @@ class KaspaTxProposalCreateSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
-        federation: KaspaFederation = self.context["federation"]
+        federation: KaspaFederation | None = self.context.get("federation")
+        if federation is None:
+            federation_payload = attrs.pop("federation", None)
+            if federation_payload is None:
+                raise ValidationError(
+                    "Federation is required when creating an unscoped proposal"
+                )
+            federation = get_or_create_federation_from_payload(federation_payload)
+
+        exit_batch = attrs.get("exit_batch")
+        if exit_batch is not None and not isinstance(exit_batch, KaspaExitBatch):
+            attrs["exit_batch"] = self._validate_exit_batch_for_federation(
+                exit_batch,
+                federation,
+            )
+
         try:
             inspection = get_pst_client().inspect(
                 attrs["unsigned_bundle_hex"],
@@ -335,10 +401,11 @@ class KaspaTxProposalCreateSerializer(serializers.Serializer):
 
         attrs["inspection"] = inspection
         attrs["proposal_hash"] = proposal_hash
+        attrs["federation"] = federation
         return attrs
 
     def create(self, validated_data):
-        federation: KaspaFederation = self.context["federation"]
+        federation: KaspaFederation = validated_data.pop("federation")
         inspection = validated_data.pop("inspection")
         exit_batch = validated_data.get("exit_batch")
         unsigned_bundle_hex = validated_data["unsigned_bundle_hex"]

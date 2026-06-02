@@ -184,6 +184,50 @@ One federation record is created from:
 You do not register a new federation for every exit proposal. Reuse the same
 federation for every exit window handled by the same signer set.
 
+Any federation can operate through the service. Registration is the step where
+the federation creates a public namespace for its signer set.
+
+Registration can be self-service, API-driven, automated by the federation's own
+deployment tooling, or inferred from the first proposal payload when that
+payload includes the public federation material.
+
+That first proposal payload must include the federation's public trust anchor:
+
+- Kaspa network
+- public kpub set
+- threshold
+- signing mode
+- optional participant labels
+
+The service derives the federation fingerprint from those public fields and
+creates or reuses the matching federation record.
+
+That distinction matters:
+
+```text
+Explicit registration:
+
+  federation-approved config
+      kpubs + threshold + network + custody address
+              |
+              v
+  idempotent service bootstrap creates/reuses federation record
+
+First-proposal registration:
+
+  proposal payload
+      unsigned PST + public federation block
+              |
+              v
+  service derives federation fingerprint and creates/reuses record
+```
+
+The federation record is the service-side identifier for the public signer set.
+It is not an endorsement by Igra Labs and it is not what makes a proposal
+trustworthy by itself. Signer wallets must still pin the expected kpubs,
+threshold, network, custody address, and Igra bridge config locally before
+signing.
+
 Create a new federation only when the Kaspa custody signer set changes:
 
 - kpubs changed
@@ -201,6 +245,7 @@ The main API paths are:
 ```text
 POST /api/v1/kaspa/federations/
 GET  /api/v1/kaspa/federations/{federation_id}/
+POST /api/v1/kaspa/transactions/
 GET  /api/v1/kaspa/federations/{federation_id}/transactions/
 GET  /api/v1/kaspa/transactions/{proposal_hash}/
 GET  /api/v1/kaspa/exit-batches/{exit_batch_id}/evidence/
@@ -294,6 +339,8 @@ Proposal Builder service
         |
         +--> waits until the next Igra exit window is finalized
         |
+        +--> creates the KEB evidence bundle from Igra RPC
+        |
         +--> verifies the window
         |
         +--> creates one proposal in Safe Transaction Service
@@ -311,6 +358,11 @@ Manual runs are still useful, but they are operator actions:
 
 Manual mode must use the same config, same federation id, and same validation
 rules as the service mode. It must not bypass evidence checks.
+
+The current management command accepts an existing `--bundle-dir`. That is the
+lowest-level entrypoint for staging, backfill, and recovery. In production, the
+Proposal Builder service should run the same KEB generation and verification
+logic automatically before calling that proposal creation path.
 
 Signers should think about the system like this:
 

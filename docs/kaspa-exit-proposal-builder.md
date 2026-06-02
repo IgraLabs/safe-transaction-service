@@ -30,8 +30,10 @@ The real exit-35 directory name shows the active window convention:
 keb-from-7344000-to-7430399-20260525T200000Z.bundle
 ```
 
-That is an 86,400-block window. `runDelta.ts` confirms the durable model: start
-from the previous bundle checkpoint, scan `fromBlock..toBlock`, write
+That is an 86,400-block Igra L2 window, not an 86,400-block Kaspa L1 UTXO scan.
+The block numbers are the EVM/Igra block numbers stored in the KEB bundle
+manifest. `runDelta.ts` confirms the durable model: start from the previous
+bundle checkpoint, scan Igra `fromBlock..toBlock`, write
 `derived/checkpoint.end.json`, then advance to `toBlock + 1`.
 
 ## Foundry Kaspa Transaction Creation
@@ -172,10 +174,10 @@ exit-aware signing command for custody exits.
 
 ## Window Timing
 
-The existing KEB automation uses deterministic block windows. In
+The existing KEB automation uses deterministic Igra L2 block windows. In
 `/Users/user/Source/igra/kasExitBridge/runDelta.ts`, the default delta is
-`86_400` blocks. It can be overridden by `--delta-blocks`, `KEB_DELTA_BLOCKS`, or
-`kasExitBridge.deltaBlocksDefault`.
+`86_400` Igra blocks. It can be overridden by `--delta-blocks`,
+`KEB_DELTA_BLOCKS`, or `kasExitBridge.deltaBlocksDefault`.
 
 For each run:
 
@@ -194,6 +196,12 @@ when `latest >= toBlock + l2ConfirmationBlocks` for RPCs without a reliable
 `finalized` tag. For mainnet, the Foundry Igra profile uses `el_confirmations=12`
 for ordinary submissions; that is a reasonable initial default for the Proposal
 Builder confirmation margin unless Igra exposes a stronger finalized block tag.
+
+The current Safe Transaction Service builder command is bundle-driven. It does
+not walk Kaspa mainnet blocks to discover exits. It reads
+`manifest.context.fromBlock` and `manifest.context.toBlock` from a closed KEB
+bundle, checks the selected Igra `toBlock` for readiness, validates the bundle
+and unsigned PST artifacts, and stores one `KaspaExitBatch` plus one proposal.
 
 ## Real Exit-35 Fixture
 

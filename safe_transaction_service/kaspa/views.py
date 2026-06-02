@@ -36,6 +36,43 @@ class KaspaFederationDetailView(RetrieveAPIView):
         return super().get(request, *args, **kwargs)
 
 
+class KaspaTxProposalListCreateView(ListCreateAPIView):
+    pagination_class = DefaultPagination
+
+    def get_queryset(self):
+        return (
+            KaspaTxProposal.objects.select_related("federation", "exit_batch")
+            .prefetch_related("signatures")
+            .order_by("-created")
+        )
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return serializers.KaspaTxProposalCreateSerializer
+        return serializers.KaspaTxProposalResponseSerializer
+
+    @extend_schema(
+        tags=["kaspa"],
+        request=serializers.KaspaTxProposalCreateSerializer,
+        responses={
+            201: serializers.KaspaTxProposalResponseSerializer,
+            400: OpenApiResponse(description="Invalid PST bundle or federation"),
+        },
+    )
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        proposal = serializer.save()
+        return Response(
+            serializers.KaspaTxProposalResponseSerializer(proposal).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(tags=["kaspa"], responses={200: serializers.KaspaTxProposalResponseSerializer})
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+
+
 class KaspaFederationTransactionListCreateView(ListCreateAPIView):
     pagination_class = DefaultPagination
 

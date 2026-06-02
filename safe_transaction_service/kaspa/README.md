@@ -23,18 +23,21 @@ kaspa-pst broadcast
 
 The service sends the federation root xpub set, threshold, and ECDSA flag to the
 helper on every operation. The helper must derive every input path and reject a
-bundle if its per-input pubkey slots do not match the registered federation.
+bundle if its per-input pubkey slots do not match the resolved federation.
 
 The expected wallet flow is:
 
 ```text
 1. Wallet creates a kaspawallet_pst_v1 unsigned bundle locally.
-2. Wallet posts it to /api/v1/kaspa/federations/{id}/transactions/.
+2. Wallet posts it to /api/v1/kaspa/transactions/ with public federation data.
 3. Signer wallets fetch the proposal and sign locally.
 4. Signer wallets post signed bundles to /api/v1/kaspa/transactions/{hash}/signatures/.
 5. The service accepts only signature-slot additions and stores the merged bundle.
 6. Once threshold is met, the proposal becomes ready and can be broadcast.
 ```
+
+Clients that already know the federation id can also post to
+`/api/v1/kaspa/federations/{id}/transactions/`.
 
 ## Igra L2 exit proposals
 
@@ -57,10 +60,17 @@ wallet private keys.
 Federation signer/operator instructions are documented in
 `docs/kaspa-federation-signer-guide.md`.
 
+Safe Transaction Service DevOps/operator instructions are documented in
+`docs/kaspa-safe-service-operator-guide.md`.
+
 The proposal-builder entrypoint is:
 
 ```text
-python manage.py build_kaspa_exit_proposal --config builder.json --federation <uuid> --bundle-dir <keb.bundle> --locking-utxos-json funding-utxos.json
+python manage.py build_kaspa_exit_proposal \
+  --config builder.json \
+  --federation <uuid> \
+  --bundle-dir <keb.bundle> \
+  --locking-utxos-json funding-utxos.json
 ```
 
 It validates the configured Igra chain/contracts, records the exit evidence, and

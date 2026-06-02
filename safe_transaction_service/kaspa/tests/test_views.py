@@ -169,6 +169,79 @@ class TestKaspaViews(APITestCase):
         self.assertEqual(KaspaBroadcastAttempt.objects.filter(success=True).count(), 1)
 
     @mock.patch("safe_transaction_service.kaspa.serializers.get_pst_client")
+    def test_create_proposal_infers_federation_from_payload(
+        self, get_pst_client_mock: MagicMock
+    ):
+        xpubs = ["kpub-a", "kpub-b", "kpub-c"]
+        fingerprint = canonical_json_hash(xpubs)
+        pst_client = get_pst_client_mock.return_value
+        pst_client.inspect.side_effect = [
+            {
+                "proposalHash": "d" * 64,
+                "xpubFingerprint": fingerprint,
+                "txIds": ["tx-unsigned-1"],
+                "inputOutpoints": [{"txId": "prev", "index": 0, "amountSompi": 300}],
+                "outputs": [{"address": "kaspa:qtest", "amountSompi": 200}],
+                "feeSompi": 100,
+                "mass": 1200,
+                "signaturesRequired": 2,
+                "signaturesCollected": 0,
+                "ready": False,
+            },
+            {
+                "proposalHash": "e" * 64,
+                "xpubFingerprint": fingerprint,
+                "txIds": ["tx-unsigned-2"],
+                "inputOutpoints": [{"txId": "prev2", "index": 0, "amountSompi": 400}],
+                "outputs": [{"address": "kaspa:qtest2", "amountSompi": 300}],
+                "feeSompi": 100,
+                "mass": 1200,
+                "signaturesRequired": 2,
+                "signaturesCollected": 0,
+                "ready": False,
+            },
+        ]
+        payload = {
+            "federation": {
+                "name": "Open federation",
+                "network": "mainnet",
+                "threshold": 2,
+                "xpubs": self.xpubs,
+                "participants": [
+                    {"name": "Alice", "xpub": "kpub-a"},
+                    {"name": "Bob", "xpub": "kpub-b"},
+                    {"name": "Carol", "xpub": "kpub-c"},
+                ],
+            },
+            "unsignedBundleHex": "aa",
+            "proposedBy": "open-builder",
+            "origin": {"note": "self-service"},
+        }
+
+        response = self.client.post(
+            reverse("v1:kaspa:transactions"),
+            data=payload,
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        federation = KaspaFederation.objects.get()
+        self.assertEqual(federation.xpub_fingerprint, fingerprint)
+        self.assertEqual(federation.participants.count(), 3)
+        self.assertEqual(response.json()["federation"], str(federation.pk))
+
+        payload["unsignedBundleHex"] = "bb"
+        response = self.client.post(
+            reverse("v1:kaspa:transactions"),
+            data=payload,
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(KaspaFederation.objects.count(), 1)
+        self.assertEqual(KaspaTxProposal.objects.count(), 2)
+
+    @mock.patch("safe_transaction_service.kaspa.serializers.get_pst_client")
     def test_create_exit_proposal_and_fetch_evidence(
         self, get_pst_client_mock: MagicMock
     ):

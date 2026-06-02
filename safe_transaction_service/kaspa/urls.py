@@ -22,6 +22,11 @@ urlpatterns = [
         name="federation-transactions",
     ),
     path(
+        "transactions/",
+        views.KaspaTxProposalListCreateView.as_view(),
+        name="transactions",
+    ),
+    path(
         "transactions/<str:proposal_hash>/",
         views.KaspaTxProposalDetailView.as_view(),
         name="transaction",
