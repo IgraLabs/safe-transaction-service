@@ -5,6 +5,9 @@ multisig proposals. The component observes finalized Igra L2 exit windows,
 verifies the bridge events, builds an unsigned Kaspa PST, and stores enough
 evidence for wallets to re-verify before signing.
 
+For federation member operating instructions and the signer trust model, see
+`docs/kaspa-federation-signer-guide.md`.
+
 The builder is not a wallet. It may know public kpubs, the threshold, the
 canonical bridge address, and public chain data. It must not have Kaspa private
 keys.

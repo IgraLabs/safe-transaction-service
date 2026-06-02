@@ -54,6 +54,9 @@ The service stores public kpubs, the canonical bridge address, verified event
 material, artifact hashes, and the unsigned transaction. It must not store Kaspa
 wallet private keys.
 
+Federation signer/operator instructions are documented in
+`docs/kaspa-federation-signer-guide.md`.
+
 The proposal-builder entrypoint is:
 
 ```text
