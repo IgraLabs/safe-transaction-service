@@ -480,6 +480,47 @@ The command validates the KEB bundle, checks Igra finality unless
 `KaspaExitBatch`, records every successful exit as `KaspaExitRequest`, then
 submits the unsigned PST through the existing proposal serializer.
 
+The successful staging `daa12` run used the live Igra receipt bundle and a live
+custody UTXO:
+
+```text
+/app/.venv/bin/python manage.py build_kaspa_exit_proposal \
+  --config /work/igra/exits/builder-config-daa12.json \
+  --federation b62e5c9e-61cb-4c1b-90fc-7c1b334fbee0 \
+  --bundle-dir /work/igra/exits/devnet-exit-daa12.bundle \
+  --locking-utxos-json /work/igra/exits/locking-utxos-daa12.json \
+  --cast-bin /work/foundry-target-codex-maturity/debug/cast \
+  --foundry-timeout 600 \
+  --mining-timeout-secs 300 \
+  --allow-non-igra-lock-script-for-testing
+```
+
+Output:
+
+```json
+{
+  "evidenceHash": "7265592f07ba302bd33fe44f811dddb9f92f43e4d33963414799581a2cb6688f",
+  "exitBatch": "13fa8a2a-c28a-4587-af79-67a46ca5cec0",
+  "exitBatchStatus": "proposed",
+  "kaspaTxId": "97b1e08af5d2ab619bfd93362d2395aef7e4759ad1b66b429e2b82005b980269",
+  "proposalHash": "71c209303a09dd0e62fdfc02e4e9c9621573532c4549051df613a9fb1539b8fd"
+}
+```
+
+`--allow-non-igra-lock-script-for-testing` is staging-only. The `daa12` custody
+UTXO was locked to the generated wallet federation P2SH script rather than the
+production Igra bridge lock script. The service still verified that the UTXO
+script matched the configured bridge script in `builder-config-daa12.json`.
+Production should omit this flag and use the canonical configured Igra lock
+script.
+
+For devnet bundles generated from a mainnet-format `requestExit` address, the
+bundle preserves both values:
+
+- `kasPayoutAddressRaw`: original contract body address, such as `kaspa:...`.
+- `kasPayoutAddress`: devnet-projected address used by `cast igra build-exit`
+  when `network=devnet`.
+
 For prebuilt artifacts, such as the exit-35 fixture, the Foundry build step can
 be skipped:
 
