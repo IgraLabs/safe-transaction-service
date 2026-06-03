@@ -69,6 +69,11 @@ def main() -> int:
         ),
         help="Priority fee in wei. Defaults to 1 gwei to satisfy Igra gas validation.",
     )
+    parser.add_argument(
+        "--gas-limit",
+        default=os.environ.get("GAS_LIMIT"),
+        help="Explicit gas limit. Useful on isolated Igra devnets where eth_estimateGas is disabled.",
+    )
     parser.add_argument("--timeout", default=os.environ.get("CAST_SEND_TIMEOUT"))
     parser.add_argument(
         "--confirmations",
@@ -223,6 +228,7 @@ def main() -> int:
             },
         },
         "transactionOptions": {
+            "gasLimit": args.gas_limit,
             "gasPrice": args.gas_price,
             "priorityGasPrice": args.priority_gas_price,
             "timeout": args.timeout,
@@ -331,6 +337,8 @@ def tx_options(args: argparse.Namespace) -> list[str]:
         options.extend(["--gas-price", args.gas_price])
     if args.priority_gas_price:
         options.extend(["--priority-gas-price", args.priority_gas_price])
+    if args.gas_limit:
+        options.extend(["--gas-limit", args.gas_limit])
     if args.timeout:
         options.extend(["--timeout", args.timeout])
     options.extend(["--confirmations", str(args.confirmations)])
