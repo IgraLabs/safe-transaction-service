@@ -902,6 +902,7 @@ class KaspaExitProposalBuilder:
                 l2_chain_id=self.config.l2_chain_id,
                 from_block=bundle.from_block,
                 to_block=bundle.to_block,
+                evidence_hash=evidence_hash,
             )
             self._validate_existing_exit_batch(exit_batch, evidence_hash)
             return exit_batch

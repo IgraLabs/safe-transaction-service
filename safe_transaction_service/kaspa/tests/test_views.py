@@ -241,6 +241,146 @@ class TestKaspaViews(APITestCase):
         self.assertEqual(KaspaFederation.objects.count(), 1)
         self.assertEqual(KaspaTxProposal.objects.count(), 2)
 
+    def test_create_exit_batch_infers_federation_from_evidence(self):
+        evidence = {
+            "schemaVersion": 1,
+            "kind": "kaspa-exit-proposal-evidence",
+            "network": {"kaspa": "mainnet", "igraChainId": 38833},
+            "window": {"fromBlock": 7344000, "toBlock": 7430399},
+            "bridge": {
+                "address": "kaspa:bridge",
+                "scriptPublicKey": "aa20",
+                "derivationPath": "m/0/0/1",
+                "threshold": 2,
+                "ecdsa": False,
+                "xpubFingerprint": canonical_json_hash(
+                    ["kpub-a", "kpub-b", "kpub-c"]
+                ),
+                "xpubs": ["kpub-c", "kpub-a", "kpub-b"],
+            },
+            "exits": [
+                {
+                    "requestId": 35,
+                    "messageId": "0x" + "1" * 64,
+                    "recipient": "kaspa:recipient",
+                    "amountSompi": 200,
+                }
+            ],
+            "bundle": {
+                "checks": {
+                    "globalErrors": [],
+                    "metadata": {
+                        "exit": {"totals": {"failed": 0}},
+                        "tree": {"totals": {"failed": 0}},
+                    },
+                }
+            },
+        }
+
+        response = self.client.post(
+            reverse("v1:kaspa:exit-batches"),
+            data={
+                "network": "mainnet",
+                "l2ChainId": 38833,
+                "fromBlock": 7344000,
+                "toBlock": 7430399,
+                "finalizedAtBlock": 7430399,
+                "evidence": evidence,
+                "exitRequests": [
+                    {
+                        "requestId": 35,
+                        "messageId": "0x" + "1" * 64,
+                        "blockNumber": 7344010,
+                        "transactionHash": "0x" + "2" * 64,
+                        "logIndex": 7,
+                        "treeIndex": 128,
+                        "recipientAddress": "kaspa:recipient",
+                        "amountSompi": 200,
+                        "burnWei": "2000000000000",
+                        "originBurnerAddress": "0x" + "3" * 40,
+                        "dispatchMessage": "0xdeadbeef",
+                        "dispatchDecoded": {
+                            "body": {"kasPayoutAddress": "kaspa:recipient"}
+                        },
+                        "checks": {"ok": True},
+                    }
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        exit_batch = KaspaExitBatch.objects.get()
+        federation = KaspaFederation.objects.get()
+        self.assertEqual(exit_batch.federation_id, federation.id)
+        self.assertEqual(exit_batch.evidence_hash, canonical_json_hash(evidence))
+        self.assertEqual(exit_batch.exit_requests.count(), 1)
+        self.assertEqual(response.json()["evidenceHash"], exit_batch.evidence_hash)
+
+        response = self.client.post(
+            reverse("v1:kaspa:exit-batches"),
+            data={
+                "network": "mainnet",
+                "l2ChainId": 38833,
+                "fromBlock": 7344000,
+                "toBlock": 7430399,
+                "finalizedAtBlock": 7430399,
+                "evidence": evidence,
+                "exitRequests": [],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(KaspaExitBatch.objects.count(), 1)
+
+    def test_same_window_accepts_distinct_evidence_batches(self):
+        federation = self.create_federation()
+        first = self.create_exit_batch(federation)
+        second_evidence = {
+            "schemaVersion": 1,
+            "kind": "kaspa-exit-proposal-evidence",
+            "network": {"kaspa": "mainnet", "igraChainId": 38833},
+            "window": {"fromBlock": 7344000, "toBlock": 7430399},
+            "bridge": {
+                "address": "kaspa:bridge",
+                "scriptPublicKey": "aa20",
+                "derivationPath": "m/0/0/1",
+                "threshold": 2,
+                "ecdsa": False,
+                "xpubFingerprint": federation.xpub_fingerprint,
+                "xpubs": self.xpubs,
+            },
+            "exits": [],
+            "candidate": "different",
+        }
+
+        response = self.client.post(
+            reverse("v1:kaspa:exit-batches"),
+            data={
+                "federation": {
+                    "network": "mainnet",
+                    "threshold": 2,
+                    "xpubs": self.xpubs,
+                },
+                "network": "mainnet",
+                "l2ChainId": 38833,
+                "fromBlock": 7344000,
+                "toBlock": 7430399,
+                "finalizedAtBlock": 7430399,
+                "canonicalBridgeAddress": "kaspa:bridge",
+                "canonicalBridgeScriptPublicKey": "aa20",
+                "canonicalDerivationPath": "m/0/0/1",
+                "evidence": second_evidence,
+                "exitRequests": [],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(KaspaExitBatch.objects.count(), 2)
+        self.assertNotEqual(response.json()["id"], str(first.pk))
+
     @mock.patch("safe_transaction_service.kaspa.serializers.get_pst_client")
     def test_create_exit_proposal_and_fetch_evidence(
         self, get_pst_client_mock: MagicMock

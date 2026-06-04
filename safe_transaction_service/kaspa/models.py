@@ -118,7 +118,13 @@ class KaspaExitBatch(TimeStampedModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["federation", "l2_chain_id", "from_block", "to_block"],
+                fields=[
+                    "federation",
+                    "l2_chain_id",
+                    "from_block",
+                    "to_block",
+                    "evidence_hash",
+                ],
                 name="unique_kaspa_exit_batch_window",
             ),
         ]

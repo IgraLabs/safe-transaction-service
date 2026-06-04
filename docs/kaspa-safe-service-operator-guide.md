@@ -346,6 +346,9 @@ Expected duplicate behavior:
 
 - Two builders submit the same finalized window:
   they reuse the same exit batch when the KEB evidence is identical.
+- Two builders submit different evidence for the same finalized window:
+  Safe stores separate exit batches because `evidence_hash` is part of the
+  identity. Signers will only sign proposals whose evidence verifies locally.
 - Two identical proposals are submitted:
   one proposal hash wins; duplicate creation fails.
 - Two different proposals for the same exit batch are accepted as separate

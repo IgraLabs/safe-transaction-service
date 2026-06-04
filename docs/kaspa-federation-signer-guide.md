@@ -463,9 +463,9 @@ happens in these cases.
 
 Expected result:
 
-- Safe Transaction Service accepts only one exit batch for the same federation,
-  Igra chain id, and block window.
-- Safe Transaction Service may accept many candidate proposals linked to that
+- Safe Transaction Service may accept more than one exit batch for the same
+  federation, Igra chain id, and block window when the evidence hash differs.
+- Safe Transaction Service may accept many candidate proposals linked to the
   same exit batch.
 - Identical proposal bytes resolve to the same `proposal_hash`.
 - Different unsigned PST candidates get different `proposal_hash` values.

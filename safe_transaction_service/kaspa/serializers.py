@@ -51,6 +51,18 @@ def normalize_xpubs(xpubs: list[str]) -> list[str]:
     return sorted(normalized)
 
 
+def sum_exit_request_amounts(exit_requests: list[dict[str, Any]]) -> int:
+    return sum(int(request.get("amount_sompi") or 0) for request in exit_requests)
+
+
+def sum_evidence_exit_amounts(exits: list[dict[str, Any]]) -> int:
+    return sum(
+        int(exit_request.get("amountSompi") or exit_request.get("amount_sompi") or 0)
+        for exit_request in exits
+        if isinstance(exit_request, dict)
+    )
+
+
 class KaspaFederationParticipantInputSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=128, allow_blank=True, default="")
     xpub = serializers.CharField()
@@ -269,6 +281,240 @@ class KaspaExitBatchResponseSerializer(serializers.Serializer):
         return KaspaExitRequestResponseSerializer(
             obj.exit_requests.all(), many=True
         ).data
+
+
+class KaspaExitRequestCreateSerializer(serializers.Serializer):
+    request_id = serializers.IntegerField(min_value=0)
+    message_id = serializers.CharField(max_length=66)
+    block_number = serializers.IntegerField(min_value=0)
+    transaction_hash = serializers.CharField(max_length=66)
+    log_index = serializers.IntegerField(min_value=0, required=False, allow_null=True)
+    tree_index = serializers.IntegerField(min_value=0, required=False, allow_null=True)
+    recipient_address = serializers.CharField(max_length=128)
+    amount_sompi = serializers.IntegerField(min_value=0)
+    burn_wei = serializers.CharField(max_length=80, allow_blank=True, default="")
+    origin_burner_address = serializers.CharField(
+        max_length=42, allow_blank=True, default=""
+    )
+    dispatch_message = serializers.CharField(allow_blank=True, default="")
+    dispatch_decoded = serializers.JSONField(default=dict)
+    raw = serializers.JSONField(default=dict)
+    checks = serializers.JSONField(default=dict)
+    status = serializers.CharField(max_length=32, default="success")
+
+
+class KaspaExitBatchCreateSerializer(serializers.Serializer):
+    federation = KaspaFederationSerializer(required=False, write_only=True)
+    network = serializers.ChoiceField(choices=KaspaNetwork.choices)
+    l2_chain_id = serializers.IntegerField(min_value=0)
+    from_block = serializers.IntegerField(min_value=0)
+    to_block = serializers.IntegerField(min_value=0)
+    finalized_at_block = serializers.IntegerField(
+        min_value=0, required=False, allow_null=True
+    )
+    status = serializers.ChoiceField(
+        choices=KaspaExitBatchStatus.choices,
+        default=KaspaExitBatchStatus.VERIFIED,
+    )
+    evidence_hash = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    total_exits = serializers.IntegerField(min_value=0, required=False)
+    total_amount_sompi = serializers.IntegerField(min_value=0, required=False)
+    canonical_bridge_address = serializers.CharField(max_length=128, required=False)
+    canonical_bridge_script_public_key = serializers.CharField(
+        max_length=128, required=False, allow_blank=True
+    )
+    canonical_derivation_path = serializers.CharField(
+        max_length=64, required=False, default="m/0/0/1"
+    )
+    threshold = serializers.IntegerField(min_value=1, required=False)
+    xpub_fingerprint = serializers.CharField(max_length=64, required=False)
+    checks = serializers.JSONField(default=dict)
+    artifact_hashes = serializers.JSONField(default=dict)
+    evidence = serializers.JSONField()
+    exit_requests = KaspaExitRequestCreateSerializer(many=True, default=list)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if attrs["to_block"] < attrs["from_block"]:
+            raise ValidationError("to_block must be greater than or equal to from_block")
+
+        evidence = attrs["evidence"]
+        if not isinstance(evidence, dict):
+            raise ValidationError("evidence must be a JSON object")
+        evidence_hash = canonical_json_hash(evidence)
+        supplied_evidence_hash = attrs.get("evidence_hash")
+        if supplied_evidence_hash and supplied_evidence_hash != evidence_hash:
+            raise ValidationError("evidence_hash does not match evidence")
+        attrs["evidence_hash"] = evidence_hash
+
+        federation: KaspaFederation | None = self.context.get("federation")
+        federation_payload = attrs.pop("federation", None)
+        if federation is None:
+            if federation_payload is None:
+                federation_payload = self._federation_payload_from_evidence(attrs)
+            federation = get_or_create_federation_from_payload(federation_payload)
+        attrs["federation"] = federation
+
+        bridge = evidence.get("bridge") if isinstance(evidence.get("bridge"), dict) else {}
+        attrs.setdefault("canonical_bridge_address", bridge.get("address", ""))
+        attrs.setdefault(
+            "canonical_bridge_script_public_key",
+            bridge.get("scriptPublicKey", ""),
+        )
+        attrs.setdefault(
+            "canonical_derivation_path",
+            bridge.get("derivationPath", "m/0/0/1"),
+        )
+        attrs.setdefault("threshold", federation.threshold)
+        attrs.setdefault("xpub_fingerprint", federation.xpub_fingerprint)
+        exit_requests = attrs.get("exit_requests") or []
+        evidence_exits = evidence.get("exits") if isinstance(evidence.get("exits"), list) else []
+        attrs.setdefault("total_exits", len(exit_requests or evidence_exits))
+        attrs.setdefault(
+            "total_amount_sompi",
+            sum_exit_request_amounts(exit_requests)
+            if exit_requests
+            else sum_evidence_exit_amounts(evidence_exits),
+        )
+
+        self._validate_evidence_consistency(attrs, federation)
+        return attrs
+
+    def _federation_payload_from_evidence(self, attrs) -> dict[str, Any]:
+        evidence = attrs["evidence"]
+        bridge = evidence.get("bridge") if isinstance(evidence.get("bridge"), dict) else None
+        if not bridge:
+            raise ValidationError(
+                "federation is required when evidence.bridge is unavailable"
+            )
+        xpubs = bridge.get("xpubs")
+        threshold = bridge.get("threshold")
+        if not xpubs or threshold is None:
+            raise ValidationError(
+                "federation is required when evidence.bridge lacks xpubs or threshold"
+            )
+        return {
+            "network": attrs["network"],
+            "threshold": threshold,
+            "ecdsa": bridge.get("ecdsa", False),
+            "xpubs": xpubs,
+            "origin": {
+                "source": "exit-batch-evidence",
+                "evidenceHash": attrs["evidence_hash"],
+            },
+        }
+
+    def _validate_evidence_consistency(
+        self, attrs, federation: KaspaFederation
+    ) -> None:
+        evidence = attrs["evidence"]
+        network = evidence.get("network") if isinstance(evidence.get("network"), dict) else {}
+        window = evidence.get("window") if isinstance(evidence.get("window"), dict) else {}
+        bridge = evidence.get("bridge") if isinstance(evidence.get("bridge"), dict) else {}
+
+        checks = {
+            "network": (attrs["network"], federation.network),
+            "threshold": (attrs["threshold"], federation.threshold),
+            "xpub_fingerprint": (
+                attrs["xpub_fingerprint"],
+                federation.xpub_fingerprint,
+            ),
+        }
+        if network.get("kaspa") is not None:
+            checks["evidence.network.kaspa"] = (network["kaspa"], attrs["network"])
+        if network.get("igraChainId") is not None:
+            checks["evidence.network.igraChainId"] = (
+                int(network["igraChainId"]),
+                attrs["l2_chain_id"],
+            )
+        if window.get("fromBlock") is not None:
+            checks["evidence.window.fromBlock"] = (
+                int(window["fromBlock"]),
+                attrs["from_block"],
+            )
+        if window.get("toBlock") is not None:
+            checks["evidence.window.toBlock"] = (
+                int(window["toBlock"]),
+                attrs["to_block"],
+            )
+        if bridge.get("address") is not None:
+            checks["evidence.bridge.address"] = (
+                bridge["address"],
+                attrs["canonical_bridge_address"],
+            )
+        if bridge.get("scriptPublicKey") is not None:
+            checks["evidence.bridge.scriptPublicKey"] = (
+                bridge["scriptPublicKey"],
+                attrs["canonical_bridge_script_public_key"],
+            )
+        if bridge.get("derivationPath") is not None:
+            checks["evidence.bridge.derivationPath"] = (
+                bridge["derivationPath"],
+                attrs["canonical_derivation_path"],
+            )
+        if bridge.get("threshold") is not None:
+            checks["evidence.bridge.threshold"] = (
+                int(bridge["threshold"]),
+                attrs["threshold"],
+            )
+        if bridge.get("xpubFingerprint") is not None:
+            checks["evidence.bridge.xpubFingerprint"] = (
+                bridge["xpubFingerprint"],
+                attrs["xpub_fingerprint"],
+            )
+        if bridge.get("xpubs") is not None:
+            checks["evidence.bridge.xpubs"] = (
+                normalize_xpubs(list(bridge["xpubs"])),
+                federation.xpubs,
+            )
+
+        for field, (left, right) in checks.items():
+            if left != right:
+                raise ValidationError(f"{field} mismatch")
+
+    def create(self, validated_data):
+        exit_requests = validated_data.pop("exit_requests")
+        federation: KaspaFederation = validated_data["federation"]
+        lookup = {
+            "federation": federation,
+            "l2_chain_id": validated_data["l2_chain_id"],
+            "from_block": validated_data["from_block"],
+            "to_block": validated_data["to_block"],
+            "evidence_hash": validated_data["evidence_hash"],
+        }
+        try:
+            with transaction.atomic():
+                exit_batch = KaspaExitBatch.objects.create(**validated_data)
+                KaspaExitRequest.objects.bulk_create(
+                    [
+                        KaspaExitRequest(batch=exit_batch, **request)
+                        for request in exit_requests
+                    ]
+                )
+                return exit_batch
+        except IntegrityError:
+            exit_batch = KaspaExitBatch.objects.get(**lookup)
+            self._validate_existing_exit_batch(exit_batch, validated_data)
+            return exit_batch
+
+    def _validate_existing_exit_batch(
+        self,
+        exit_batch: KaspaExitBatch,
+        validated_data: dict[str, Any],
+    ) -> None:
+        expected = {
+            "network": validated_data["network"],
+            "canonical_bridge_address": validated_data["canonical_bridge_address"],
+            "canonical_bridge_script_public_key": validated_data[
+                "canonical_bridge_script_public_key"
+            ],
+            "canonical_derivation_path": validated_data["canonical_derivation_path"],
+            "threshold": validated_data["threshold"],
+            "xpub_fingerprint": validated_data["xpub_fingerprint"],
+        }
+        for field, value in expected.items():
+            if getattr(exit_batch, field) != value:
+                raise ValidationError(f"existing exit batch conflicts on {field}")
 
 
 class KaspaTxProposalResponseSerializer(serializers.Serializer):

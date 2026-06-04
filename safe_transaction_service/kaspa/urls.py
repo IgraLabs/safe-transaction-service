@@ -33,7 +33,7 @@ urlpatterns = [
     ),
     path(
         "exit-batches/",
-        views.KaspaExitBatchListView.as_view(),
+        views.KaspaExitBatchListCreateView.as_view(),
         name="exit-batches",
     ),
     path(

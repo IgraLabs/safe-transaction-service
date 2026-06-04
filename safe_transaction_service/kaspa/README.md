@@ -53,10 +53,12 @@ attached to a verified `KaspaExitBatch`.
 6. Wallets sign only if the evidence and unsigned PST match.
 ```
 
-An exit batch is reusable evidence, not a lock. Multiple candidate proposals may
-point to the same exit batch. This mirrors upstream Safe behavior: the proposal
-hash identifies the candidate transaction, and signer quorum decides which
-candidate becomes executable.
+An exit batch is reusable evidence, not a lock. Its identity includes
+`federation + Igra chain id + block window + evidence_hash`, so different
+evidence candidates for the same window can coexist. Multiple candidate
+proposals may also point to the same exit batch. This mirrors upstream Safe
+behavior: the proposal hash identifies the candidate transaction, and signer
+quorum decides which candidate becomes executable.
 
 Signer wallets can either fetch proposals for their federation and locally show
 only candidates that pass verification, or fetch one direct `proposal_hash` from

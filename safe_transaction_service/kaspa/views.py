@@ -137,14 +137,35 @@ class KaspaTxProposalDetailView(RetrieveAPIView):
         return super().get(request, *args, **kwargs)
 
 
-class KaspaExitBatchListView(ListAPIView):
+class KaspaExitBatchListCreateView(ListCreateAPIView):
     queryset = (
         KaspaExitBatch.objects.select_related("federation")
         .prefetch_related("tx_proposals")
         .order_by("-to_block", "-created")
     )
-    serializer_class = serializers.KaspaExitBatchSummarySerializer
     pagination_class = DefaultPagination
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return serializers.KaspaExitBatchCreateSerializer
+        return serializers.KaspaExitBatchSummarySerializer
+
+    @extend_schema(
+        tags=["kaspa"],
+        request=serializers.KaspaExitBatchCreateSerializer,
+        responses={
+            201: serializers.KaspaExitBatchResponseSerializer,
+            400: OpenApiResponse(description="Invalid exit evidence package"),
+        },
+    )
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        exit_batch = serializer.save()
+        return Response(
+            serializers.KaspaExitBatchResponseSerializer(exit_batch).data,
+            status=status.HTTP_201_CREATED,
+        )
 
     @extend_schema(
         tags=["kaspa"], responses={200: serializers.KaspaExitBatchSummarySerializer}
